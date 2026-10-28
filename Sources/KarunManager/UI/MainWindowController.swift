@@ -11,6 +11,12 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         self.model = model
     }
 
+    /// The user is looking at the window: our app is active and the window is on screen.
+    var isFrontmost: Bool {
+        guard let window else { return false }
+        return NSApp.isActive && window.isVisible && !window.isMiniaturized
+    }
+
     func show() {
         let window = self.window ?? makeWindow()
         self.window = window

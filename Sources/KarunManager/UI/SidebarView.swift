@@ -8,12 +8,13 @@ struct SidebarView: View {
 
     @State private var queuesExpanded = true
     @State private var categoriesExpanded = true
+    @State private var dropTarget: SidebarItem?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .trailing) {
                 WindowDragArea()
-                IconButton(symbol: "plus", help: "New task") { model.onQuickCapture() }
+                IconButton(symbol: "plus", help: "New task (⌘N)") { model.focusComposer() }
                     .padding(.trailing, 8)
             }
             .frame(height: Theme.titlebarHeight)
@@ -71,6 +72,40 @@ struct SidebarView: View {
             icon: icon()
         ) {
             model.selection = item
+        }
+        .dropHighlight(dropTarget == item)
+        .dropDestination(for: String.self) { items, _ in
+            drop(items, on: item)
+        } isTargeted: { targeted in
+            guard item.acceptsDrops else { return }
+            if targeted {
+                dropTarget = item
+            } else if dropTarget == item {
+                dropTarget = nil
+            }
+        }
+    }
+
+    /// Dropping a task on a queue folder re-queues it; on a category folder, re-categorises it.
+    private func drop(_ dragIDs: [String], on item: SidebarItem) -> Bool {
+        let dropped = dragIDs.compactMap { model.task(withDragID: $0, in: tasks) }
+        guard item.acceptsDrops, !dropped.isEmpty else { return false }
+        for task in dropped {
+            switch item {
+            case .queue(let level): model.setQueue(task, to: level)
+            case .category(let name): model.setCategory(task, to: name)
+            case .allOpen, .completed: break
+            }
+        }
+        return true
+    }
+}
+
+private extension SidebarItem {
+    var acceptsDrops: Bool {
+        switch self {
+        case .queue, .category: true
+        case .allOpen, .completed: false
         }
     }
 }

@@ -39,6 +39,8 @@ An unlisted, lightweight macOS menu bar utility (`LSUIElement = true`) that prov
 - **Promotion Rule:** IF `skipCount >= 5` AND `queueLevel > 0`:
   - Set `queueLevel = queueLevel - 1` (promotes task to higher priority).
   - Reset `skipCount = 0`.
+- **Amendment — per-category skip direction:** each category is set to *promote* (rule above) or *demote*
+  (`queueLevel + 1`, capped at 2). Defaults: "Things to do" demotes; "Things to buy" and "People to call" promote.
 
 ## 4. Feature Specifications
 

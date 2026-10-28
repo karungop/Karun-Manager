@@ -21,6 +21,7 @@ enum Theme {
     static let red = Color(hex: 0xFB464C)
     static let orange = Color(hex: 0xE9973F)
     static let blue = Color(hex: 0x53A6FF)
+    static let green = Color(hex: 0x44CF6E)
 
     static let titlebarHeight: CGFloat = 38
     static let windowBackground = NSColor(srgbRed: 0x1E / 255, green: 0x1E / 255, blue: 0x1E / 255, alpha: 1)
@@ -70,6 +71,43 @@ enum CategoryStyle {
         case TaskCategory.thingsToBuy: "cart"
         case TaskCategory.peopleToCall: "phone"
         default: "checklist"
+        }
+    }
+}
+
+extension SkipDirection {
+    var title: String {
+        switch self {
+        case .promote: "Promote"
+        case .demote: "Demote"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .promote: "arrow.up"
+        case .demote: "arrow.down"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .promote: "Every \(MLFQ.promotionThreshold) skips → up a queue"
+        case .demote: "Every \(MLFQ.promotionThreshold) skips → down a queue"
+        }
+    }
+}
+
+extension RepeatRule {
+    var title: String {
+        switch self {
+        case .never: "Never"
+        case .daily: "Daily"
+        case .weekdays: "Weekdays"
+        case .weekly: "Weekly"
+        case .biweekly: "Every 2 weeks"
+        case .monthly: "Monthly"
+        case .yearly: "Yearly"
         }
     }
 }

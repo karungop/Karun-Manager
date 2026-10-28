@@ -7,6 +7,8 @@ struct TagPill: View {
 
     var body: some View {
         Text(CategoryStyle.tag(categoryName))
+            .lineLimit(1)
+            .fixedSize()
             .font(.system(size: 12))
             .foregroundStyle(Theme.tagText)
             .padding(.horizontal, 7)
@@ -137,4 +139,45 @@ struct WindowDragArea: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView { DragView() }
     func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+/// Menu items for picking a `RepeatRule`, with a checkmark on the current one.
+struct RepeatRuleMenuItems: View {
+    let current: RepeatRule
+    let onSelect: (RepeatRule) -> Void
+
+    var body: some View {
+        ForEach(RepeatRule.allCases, id: \.self) { rule in
+            Button {
+                onSelect(rule)
+            } label: {
+                if rule == current {
+                    Label(rule.title, systemImage: "checkmark")
+                } else {
+                    Text(rule.title)
+                }
+            }
+            if rule == .never { Divider() }
+        }
+    }
+}
+
+/// Accent outline shown on whatever a dragged task is hovering over.
+struct DropHighlight: ViewModifier {
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        content.background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isActive ? Theme.accent.opacity(0.08) : .clear)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(isActive ? Theme.accent.opacity(0.7) : .clear, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                )
+        )
+    }
+}
+
+extension View {
+    func dropHighlight(_ isActive: Bool) -> some View { modifier(DropHighlight(isActive: isActive)) }
 }

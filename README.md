@@ -26,6 +26,7 @@ build/KarunManager.app/Contents/MacOS/KarunManager --simulate-idle --in-memory
 | ----------------- | -------------------------------------------------------------------------- |
 | `--simulate-wake` | Uses `MockSystemEventMonitor` and fires a wake event ~1s after launch       |
 | `--simulate-idle` | Uses `MockSystemEventMonitor` reporting 1h idle and runs an idle check      |
+| `--simulate-focus`| Like `--simulate-idle` with Terminal frontmost: Distraction Guard badge + notification |
 | `--in-memory`     | Throwaway SwiftData store instead of `~/Library/Application Support/KarunManager` |
 
 ## Layout
@@ -37,7 +38,9 @@ build/KarunManager.app/Contents/MacOS/KarunManager --simulate-idle --in-memory
 ## Shortcuts
 
 - **Quick Capture:** `⌥ Space` toggle · `Return` save · `Esc` cancel. Optional prefixes `buy:` / `call:` / `todo:` set the category.
-- **Nudge:** `⌘⇧D` done · `⌘S` snooze 1h · `Esc` skip (5 skips promote the task one queue level).
+- **Nudge:** `⌘⇧D` done · `⌘S` snooze 1h · `Esc` skip. Every 5 skips move the task one queue level, in its
+  category's direction (set on the category page): Things to do demotes by default; the others promote.
+  The nudge HUD also has an "Add a task…" line, so wake/idle HUDs double as Quick Capture.
 
 ## Spec interpretation notes
 
