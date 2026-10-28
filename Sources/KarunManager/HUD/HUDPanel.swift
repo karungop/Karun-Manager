@@ -32,9 +32,13 @@ final class HUDPresenter {
     enum Kind { case quickCapture, nudge }
 
     private(set) var current: Kind?
+    private var onCancel: (() -> Void)?
     private(set) lazy var panel = HUDPanel()
 
-    func present(_ kind: Kind, @ViewBuilder content: () -> some View) {
+    /// `onCancel` is what Esc means for this HUD (dismiss for capture, skip for a nudge),
+    /// so the global Esc handler can trigger it even when the panel isn't key.
+    func present(_ kind: Kind, onCancel: @escaping () -> Void, @ViewBuilder content: () -> some View) {
+        self.onCancel = onCancel
         // Fresh hosting view each time so SwiftUI @State (e.g. typed text) starts clean.
         let hosting = NSHostingView(rootView: content())
         panel.contentView = hosting
@@ -44,10 +48,15 @@ final class HUDPresenter {
         current = kind
     }
 
+    func cancel() {
+        onCancel?()
+    }
+
     func dismiss() {
         panel.orderOut(nil)
         panel.contentView = nil
         current = nil
+        onCancel = nil
     }
 
     private func positionTopCenter() {

@@ -10,10 +10,40 @@ public final class TaskStore {
     /// Snoozes are intentionally in-memory: the spec's data model has no snooze field.
     private var snoozedUntil: [UUID: Date] = [:]
 
-    public init(container: ModelContainer, now: @escaping () -> Date = { Date() }) {
+    private let defaults: UserDefaults
+
+    /// Per-category skip directions used until the user changes them.
+    public static let defaultSkipDirections: [String: SkipDirection] = [
+        TaskCategory.thingsToDo: .demote,
+        TaskCategory.thingsToBuy: .promote,
+        TaskCategory.peopleToCall: .promote,
+    ]
+
+    public init(
+        container: ModelContainer,
+        defaults: UserDefaults = .standard,
+        now: @escaping () -> Date = { Date() }
+    ) {
         self.container = container
         self.context = container.mainContext
+        self.defaults = defaults
         self.now = now
+    }
+
+    // MARK: Skip direction (a small per-category preference, so UserDefaults rather than SwiftData)
+
+    public func skipDirection(for categoryName: String) -> SkipDirection {
+        defaults.string(forKey: Self.skipDirectionKey(categoryName)).flatMap(SkipDirection.init(rawValue:))
+            ?? Self.defaultSkipDirections[categoryName]
+            ?? .promote
+    }
+
+    public func setSkipDirection(_ direction: SkipDirection, for categoryName: String) {
+        defaults.set(direction.rawValue, forKey: Self.skipDirectionKey(categoryName))
+    }
+
+    private static func skipDirectionKey(_ categoryName: String) -> String {
+        "skipDirection.\(categoryName)"
     }
 
     public static func makeContainer(inMemory: Bool = false) throws -> ModelContainer {
@@ -31,9 +61,16 @@ public final class TaskStore {
     public func add(
         title: String,
         categoryName: String = TaskCategory.thingsToDo,
-        queueLevel: QueueLevel = .medium
+        queueLevel: QueueLevel = .medium,
+        repeatRule: RepeatRule = .never
     ) throws -> TaskItem {
-        let task = TaskItem(title: title, categoryName: categoryName, queueLevel: queueLevel, createdAt: now())
+        let task = TaskItem(
+            title: title,
+            categoryName: categoryName,
+            queueLevel: queueLevel,
+            createdAt: now(),
+            repeatRule: repeatRule
+        )
         context.insert(task)
         try context.save()
         return task
@@ -47,6 +84,7 @@ public final class TaskStore {
             ("Finish quarterly expense report", TaskCategory.thingsToDo, .medium, 4, false),
             ("Oat milk, coffee beans, lemons", TaskCategory.thingsToBuy, .medium, 1, false),
             ("Schedule dentist cleaning", TaskCategory.peopleToCall, .medium, 0, false),
+            ("Water the plants", TaskCategory.thingsToDo, .medium, 0, false),
             ("Replace bike chain", TaskCategory.thingsToBuy, .low, 3, false),
             ("Read 'Designing Data-Intensive Applications'", TaskCategory.thingsToDo, .low, 0, false),
             ("Pay electricity bill", TaskCategory.thingsToDo, .medium, 0, true),
@@ -65,29 +103,56 @@ public final class TaskStore {
             )
             context.insert(task)
         }
+        if let plants = try pendingTasks().first(where: { $0.title == "Water the plants" }) {
+            plants.repeatRule = .weekly
+            try complete(plants)
+        }
         try context.save()
     }
 
+    /// Open tasks in queue order (the computed `queuePosition` can't go in a SortDescriptor).
     public func pendingTasks() throws -> [TaskItem] {
-        let descriptor = FetchDescriptor<TaskItem>(
-            predicate: #Predicate { $0.isCompleted == false },
-            sortBy: [SortDescriptor(\.queueLevel), SortDescriptor(\.createdAt)]
-        )
-        return try context.fetch(descriptor)
+        let descriptor = FetchDescriptor<TaskItem>(predicate: #Predicate { $0.isCompleted == false })
+        return try context.fetch(descriptor).sorted(by: MLFQ.isOrderedBefore)
     }
 
-    /// The task a nudge should show right now, skipping anything snoozed.
+    /// The task a nudge should show right now, skipping anything snoozed or scheduled for later.
     public func nextTask() throws -> TaskItem? {
         let current = now()
         return MLFQ.selectNext(from: try pendingTasks()) { task in
-            (snoozedUntil[task.id] ?? .distantPast) <= current
+            task.isAvailable(at: current) && (snoozedUntil[task.id] ?? .distantPast) <= current
         }
     }
 
-    public func complete(_ task: TaskItem) throws {
+    /// Completes `task`; for a repeating task, also schedules and returns its next occurrence.
+    /// The finished occurrence stays in Completed as history.
+    @discardableResult
+    public func complete(_ task: TaskItem) throws -> TaskItem? {
+        let completedAt = now()
         task.isCompleted = true
-        task.completedAt = now()
+        task.completedAt = completedAt
         snoozedUntil[task.id] = nil
+
+        var next: TaskItem?
+        if let nextDate = task.repeatRule.nextOccurrence(after: completedAt) {
+            let occurrence = TaskItem(
+                title: task.title,
+                categoryName: task.categoryName,
+                queueLevel: QueueLevel(rawValue: task.queueLevel) ?? .medium,
+                createdAt: completedAt,
+                repeatRule: task.repeatRule,
+                availableFrom: nextDate
+            )
+            occurrence.enqueuedAt = nextDate  // joins the back of the line on the day it's due
+            context.insert(occurrence)
+            next = occurrence
+        }
+        try context.save()
+        return next
+    }
+
+    public func setRepeatRule(_ task: TaskItem, to rule: RepeatRule) throws {
+        task.repeatRule = rule
         try context.save()
     }
 
@@ -104,9 +169,11 @@ public final class TaskStore {
     }
 
     /// A manual re-prioritisation restarts aging at the new level.
+    /// A manual move joins the back of the new queue and restarts aging there.
     public func setQueueLevel(_ task: TaskItem, to level: QueueLevel) throws {
         task.queueLevel = level.rawValue
         task.skipCount = 0
+        task.enqueuedAt = now()
         try context.save()
     }
 
@@ -116,7 +183,7 @@ public final class TaskStore {
     }
 
     public func skip(_ task: TaskItem) throws {
-        MLFQ.recordSkip(task)
+        MLFQ.recordSkip(task, direction: skipDirection(for: task.categoryName), at: now())
         try context.save()
     }
 

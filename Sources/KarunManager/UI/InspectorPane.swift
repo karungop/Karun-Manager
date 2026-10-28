@@ -34,9 +34,10 @@ struct InspectorPane: View {
         .background(Theme.bgSecondary)
     }
 
-    // `tasks` changing re-renders this, so the MLFQ pick stays current.
+    // `tasks` changes re-render this; `revision` covers snoozes, which SwiftData doesn't see.
     @ViewBuilder
     private var upNext: some View {
+        let _ = model.revision
         VStack(alignment: .leading, spacing: 10) {
             SectionTitle("Up next")
             if let next = try? model.store.nextTask() {
@@ -50,20 +51,23 @@ struct InspectorPane: View {
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Theme.textNormal)
                         .fixedSize(horizontal: false, vertical: true)
-                    Button {
-                        model.onNudgeNow()
-                    } label: {
-                        Label("Nudge now", systemImage: "bolt.fill")
-                            .frame(maxWidth: .infinity)
+                    // Same actions as the nudge HUD, handled in place while the window is up.
+                    HStack(spacing: 6) {
+                        Button("Done") { model.complete(next) }
+                            .buttonStyle(ObsidianButtonStyle(prominent: true))
+                        Button("Snooze 1h") { model.snooze(next) }
+                            .buttonStyle(ObsidianButtonStyle())
+                        Button("Skip") { model.skip(next) }
+                            .buttonStyle(ObsidianButtonStyle())
+                            .help("Counts toward promotion, like skipping a nudge")
                     }
-                    .buttonStyle(ObsidianButtonStyle(prominent: true))
                 }
                 .padding(12)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Theme.bgPrimary))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.border))
                 .onTapGesture { model.selectedTaskID = next.id }
             } else {
-                Placeholder("Queue is empty. Press ⌥Space to capture something.")
+                Placeholder("Queue is empty. Add something with ⌘N.")
             }
         }
     }
@@ -83,18 +87,40 @@ struct InspectorPane: View {
                     .fixedSize()
                 }
                 PropertyRow(symbol: "square.stack.3d.up", key: "queue") {
+                    Text("⌘1 – ⌘3").foregroundStyle(Theme.textFaint)
+                }
+                QueuePicker(selection: QueueLevel(task: task), fillsWidth: true) { model.setQueue(task, to: $0) }
+                    .padding(.bottom, 4)
+                let direction = model.skipDirection(for: task.categoryName)
+                PropertyRow(symbol: "arrow.uturn.right", key: "skips") {
+                    SkipMeter(task: task, direction: direction)
+                }
+                PropertyRow(symbol: direction.symbol, key: "on skip") {
                     Menu {
-                        ForEach(QueueLevel.allCases, id: \.self) { level in
-                            Button(level.title) { model.perform { try $0.setQueueLevel(task, to: level) } }
+                        ForEach(SkipDirection.allCases, id: \.self) { option in
+                            Button(option.title) { model.setSkipDirection(option, for: task.categoryName) }
                         }
                     } label: {
-                        QueueBadge(level: QueueLevel(task: task))
+                        Text(direction.title)
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
+                    .help("Applies to every task in \(task.categoryName). \(direction.explanation)")
                 }
-                PropertyRow(symbol: "arrow.uturn.right", key: "skips") {
-                    SkipMeter(task: task)
+                PropertyRow(symbol: "repeat", key: "repeat") {
+                    Menu {
+                        RepeatRuleMenuItems(current: task.repeatRule) { model.setRepeatRule(task, to: $0) }
+                    } label: {
+                        Text(task.repeatRule.title)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Completing a repeating task schedules the next one")
+                }
+                if !task.isCompleted, let next = task.availableFrom, next > model.now {
+                    PropertyRow(symbol: "calendar.badge.clock", key: "available") {
+                        Text(next, format: .dateTime.weekday(.abbreviated).month().day())
+                    }
                 }
                 PropertyRow(symbol: "calendar", key: "created") {
                     Text(task.createdAt, format: .dateTime.month().day().hour().minute())
@@ -160,26 +186,30 @@ private struct PropertyRow<Value: View>: View {
     }
 }
 
-/// Progress toward the next MLFQ promotion.
+/// Progress toward the next skip-triggered move, in this category's direction.
 private struct SkipMeter: View {
     let task: TaskItem
+    let direction: SkipDirection
 
     var body: some View {
-        if task.queueLevel == QueueLevel.high.rawValue {
-            Text("\(task.skipCount) · top queue")
-        } else {
+        if let target = MLFQ.nextLevel(for: task, direction: direction) {
             HStack(spacing: 8) {
                 HStack(spacing: 3) {
                     ForEach(0..<MLFQ.promotionThreshold, id: \.self) { index in
                         Capsule()
                             .fill(index < task.skipCount ? Theme.accent : Theme.border)
-                            .frame(width: 12, height: 5)
+                            .frame(width: 10, height: 5)
                     }
                 }
                 Text("\(task.skipCount)/\(MLFQ.promotionThreshold)")
                     .foregroundStyle(Theme.textMuted)
+                Image(systemName: direction.symbol)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(target.color)
             }
-            .help("Promotes one queue level after \(MLFQ.promotionThreshold) skips")
+            .help("Moves to \(target.title) after \(MLFQ.promotionThreshold) skips")
+        } else {
+            Text("\(task.skipCount) · \(direction == .promote ? "top" : "bottom") queue")
         }
     }
 }

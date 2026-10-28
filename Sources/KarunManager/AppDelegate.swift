@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var idleTimer: Timer?
     private var library: LibraryModel!
     private var mainWindow: MainWindowController!
+    private let notifications = NotificationManager()
 
     init(options: LaunchOptions) {
         self.options = options
@@ -22,36 +23,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         do {
-            store = TaskStore(container: try TaskStore.makeContainer(inMemory: options.inMemory))
+            store = TaskStore(
+                container: try TaskStore.makeContainer(inMemory: options.inMemory),
+                defaults: makeDefaults()
+            )
             if options.demo { try store.seedDemoData() }
         } catch {
             fatalError("Failed to open task store: \(error)")
         }
 
         library = LibraryModel(store: store)
-        library.onQuickCapture = { [weak self] in self?.showQuickCapture() }
-        library.onNudgeNow = { [weak self] in self?.showNudge() }
         mainWindow = MainWindowController(model: library)
 
+        NotificationSetting.registerDefaults()
+        notifications.requestAuthorization()
+        notifications.onResponse = { [weak self] id, action in self?.handleNotification(taskID: id, action: action) }
+        library.didMutate = { [weak self] in self?.syncDueReminders() }
+        library.onSkipMovedTask = { [weak self] task, old, new in
+            self?.notifications.postQueueChange(for: task, from: old, to: new)
+        }
+        syncDueReminders()
+
         statusBar = StatusBarController(
-            onOpenWindow: { [weak self] in self?.mainWindow.show() },
-            onQuickCapture: { [weak self] in self?.showQuickCapture() },
-            onShowNextTask: { [weak self] in self?.showNudge() }
+            onOpenWindow: { [weak self] in self?.openWindow() },
+            onQuickCapture: { [weak self] in self?.quickCaptureRequested() },
+            onShowNextTask: { [weak self] in self?.showNextTaskRequested() }
         )
 
-        hotkey = HotkeyMonitor { [weak self] in self?.toggleQuickCapture() }
+        hotkey = HotkeyMonitor { [weak self] key, isLocal in
+            self?.handleKey(key, isLocal: isLocal) ?? false
+        }
         requestAccessibilityIfNeeded()
 
         monitor = makeMonitor()
         monitor.startObservingWake { [weak self] in self?.handle(.wake) }
 
         idleTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.handle(.idleTick) }
+            MainActor.assumeIsolated {
+                self?.library.now = Date()
+                self?.handle(.idleTick)
+            }
         }
 
         if options.simulateIdle { handle(.idleTick) }
-        // Simulation runs stay HUD-only so they can verify the no-focus-steal behaviour.
-        if !options.usesMockMonitor { mainWindow.show() }
+        // Launch stays quiet (menu bar only); the window opens from the menu bar or Dock icon.
         #if DEBUG
         if let directory = options.snapshotDirectory { runSnapshots(into: directory) }
         #endif
@@ -59,13 +74,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Clicking the Dock icon (or re-opening the app) brings the window back.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        mainWindow.show()
+        openWindow()
         return false
+    }
+
+    /// Switching to the app (e.g. Cmd+Tab) clears any HUD; the window is the place to act then.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        if mainWindow.isFrontmost { hud.dismiss() }
+    }
+
+    private func openWindow() {
+        hud.dismiss()
+        mainWindow.show()
+    }
+
+    /// Throwaway runs (`--demo`, `--in-memory`) get a fresh preferences suite so they never touch real settings.
+    private func makeDefaults() -> UserDefaults {
+        guard options.inMemory else { return .standard }
+        let suite = "com.karungopal.KarunManager.ephemeral"
+        UserDefaults.standard.removePersistentDomain(forName: suite)
+        return UserDefaults(suiteName: suite) ?? .standard
     }
 
     private func makeMonitor() -> SystemEventMonitoring {
         guard options.usesMockMonitor else { return LiveSystemEventMonitor() }
-        let mock = MockSystemEventMonitor(systemIdleTime: options.simulateIdle ? 3600 : 0)
+        let mock = MockSystemEventMonitor(
+            systemIdleTime: options.simulateIdle ? 3600 : 0,
+            frontmostBundleIdentifier: options.simulateFocus ? "com.apple.Terminal" : nil
+        )
         if options.simulateWake {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 MainActor.assumeIsolated { mock.simulateWake() }
@@ -83,8 +119,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Triggers
 
     private func handle(_ trigger: NudgeTrigger) {
-        // Never interrupt something the user is already looking at.
-        guard hud.current == nil else { return }
+        // Never interrupt a HUD that's already up, and never pop one over the main window.
+        guard hud.current == nil, !mainWindow.isFrontmost else { return }
 
         let decision = policy.evaluate(
             trigger,
@@ -99,14 +135,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .none: break
         case .showQuickCapture: showQuickCapture()
         case .showNudge: showNudge()
-        case .badgeOnly: statusBar.setBadged(true)
+        case .badgeOnly: guardedNudge()
+        }
+    }
+
+    /// Distraction Guard: no HUD, just the badge and (if enabled) a quiet notification.
+    private func guardedNudge() {
+        statusBar.setBadged(true)
+        guard NotificationSetting.nudges.isEnabled, let task = try? store.nextTask() else { return }
+        notifications.postNudge(for: task)
+        library.lastNudgeAt = Date()  // keeps the 10-minute spacing between notifications too
+    }
+
+    // MARK: - Notifications
+
+    private func syncDueReminders() {
+        let now = Date()
+        let upcoming = (try? store.pendingTasks())?.filter { !$0.isAvailable(at: now) } ?? []
+        notifications.scheduleDueReminders(for: upcoming)
+    }
+
+    private func handleNotification(taskID: UUID, action: NotificationManager.Action?) {
+        guard let task = try? store.pendingTasks().first(where: { $0.id == taskID }) else { return }
+        statusBar.setBadged(false)
+        switch action {
+        case .done: library.complete(task)
+        case .snooze: library.snooze(task)
+        case .skip: library.skip(task)
+        case nil:
+            openWindow()
+            library.selectedTaskID = task.id
+        }
+    }
+
+    // MARK: - Keys
+
+    private func handleKey(_ key: GlobalKey, isLocal: Bool) -> Bool {
+        switch key {
+        case .quickCapture:
+            quickCaptureRequested()
+            return true
+        case .escape:
+            guard hud.current != nil else { return false }
+            // While the panel is key its SwiftUI views already handle Esc.
+            if isLocal && hud.panel.isKeyWindow { return false }
+            hud.cancel()
+            return true
         }
     }
 
     // MARK: - Quick Capture
 
-    private func toggleQuickCapture() {
-        if hud.current == .quickCapture {
+    /// With the window in front, capture happens in its composer; otherwise ⌥Space toggles the HUD.
+    private func quickCaptureRequested() {
+        if mainWindow.isFrontmost {
+            library.focusComposer()
+        } else if hud.current == .quickCapture {
             hud.dismiss()
         } else {
             showQuickCapture()
@@ -114,7 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showQuickCapture() {
-        hud.present(.quickCapture) {
+        hud.present(.quickCapture, onCancel: { [weak self] in self?.hud.dismiss() }) {
             QuickCaptureView(
                 onSubmit: { [weak self] text in self?.saveCapture(text) },
                 onCancel: { [weak self] in self?.hud.dismiss() }
@@ -123,16 +207,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func saveCapture(_ text: String) {
-        guard let parsed = CaptureParser.parse(text) else { return }
-        do {
-            try store.add(title: parsed.title, categoryName: parsed.categoryName)
-        } catch {
-            NSLog("KarunManager: failed to save task: \(error)")
-        }
+        guard addTask(fromHUD: text) else { return }
         hud.dismiss()
     }
 
+    @discardableResult
+    private func addTask(fromHUD text: String) -> Bool {
+        guard let parsed = CaptureParser.parse(text) else { return false }
+        library.perform { try $0.add(title: parsed.title, categoryName: parsed.categoryName) }
+        return true
+    }
+
     // MARK: - Nudge
+
+    private func showNextTaskRequested() {
+        if mainWindow.isFrontmost {
+            library.selectedTaskID = try? store.nextTask()?.id
+        } else {
+            showNudge()
+        }
+    }
 
     private func showNudge() {
         statusBar.setBadged(false)
@@ -141,22 +235,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         library.lastNudgeAt = Date()
-        hud.present(.nudge) {
+        let skip = { [weak self] in self?.resolve { $0.skip(task) } }
+        hud.present(.nudge, onCancel: { skip() }) {
             NudgeView(
                 task: task,
-                onDone: { [weak self] in self?.resolve(task) { try $0.complete(task) } },
-                onSnooze: { [weak self] in self?.resolve(task) { $0.snooze(task, for: 3600) } },
-                onSkip: { [weak self] in self?.resolve(task) { try $0.skip(task) } }
+                skipDirection: store.skipDirection(for: task.categoryName),
+                onDone: { [weak self] in self?.resolve { $0.complete(task) } },
+                onSnooze: { [weak self] in self?.resolve { $0.snooze(task) } },
+                onSkip: { skip() },
+                onAdd: { [weak self] text in self?.addTask(fromHUD: text) ?? false }
             )
         }
     }
 
-    private func resolve(_ task: TaskItem, _ action: (TaskStore) throws -> Void) {
-        do {
-            try action(store)
-        } catch {
-            NSLog("KarunManager: failed to update task \(task.id): \(error)")
-        }
+    /// HUD actions go through LibraryModel so they share reporting (queue-change notifications, reminders).
+    private func resolve(_ action: (LibraryModel) -> Void) {
+        action(library)
         hud.dismiss()
     }
 
@@ -169,12 +263,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             view.cacheDisplay(in: view.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: base.appending(path: name))
         }
+        mainWindow.show()
         let steps: [(TimeInterval, () -> Void)] = [
             (1.0, { self.library.selectedTaskID = try? self.store.nextTask()?.id }),
             (1.6, { capture(self.mainWindow.window?.contentView, "main-window.png") }),
-            (1.8, { self.showNudge() }),
-            (2.4, { capture(self.hud.panel.contentView, "nudge-hud.png"); self.hud.dismiss(); self.showQuickCapture() }),
-            (3.0, { capture(self.hud.panel.contentView, "quick-capture-hud.png"); NSApp.terminate(nil) }),
+            (1.7, { self.library.selection = .queue(.medium) }),
+            (2.2, { capture(self.mainWindow.window?.contentView, "queue-page.png") }),
+            (2.3, { self.library.selection = .category(TaskCategory.thingsToDo) }),
+            (2.8, { capture(self.mainWindow.window?.contentView, "category-page.png") }),
+            (2.9, { self.showNudge() }),
+            (3.4, { capture(self.hud.panel.contentView, "nudge-hud.png"); self.hud.dismiss(); self.showQuickCapture() }),
+            (4.0, { capture(self.hud.panel.contentView, "quick-capture-hud.png"); NSApp.terminate(nil) }),
         ]
         for (delay, step) in steps {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated(step) }

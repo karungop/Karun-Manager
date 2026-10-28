@@ -24,6 +24,7 @@ struct MainWindowView: View {
         .overlay(alignment: .bottomTrailing) {
             StatusBarView(model: model, tasks: tasks)
         }
+        .background { KeyboardShortcuts(model: model) }
         .background(Theme.bgPrimary)
         .ignoresSafeArea()
         .environment(\.colorScheme, .dark)
@@ -38,8 +39,7 @@ struct RibbonView: View {
     var body: some View {
         VStack(spacing: 6) {
             WindowDragArea().frame(height: Theme.titlebarHeight)
-            IconButton(symbol: "square.and.pencil", help: "Quick capture (⌥Space)") { model.onQuickCapture() }
-            IconButton(symbol: "bolt", help: "Nudge me now") { model.onNudgeNow() }
+            IconButton(symbol: "square.and.pencil", help: "New task (⌘N)") { model.focusComposer() }
             IconButton(symbol: "tray.full", help: "All open tasks", isActive: model.selection == .allOpen) {
                 model.selection = .allOpen
             }
@@ -47,6 +47,7 @@ struct RibbonView: View {
                 model.selection = .completed
             }
             Spacer()
+            SettingsButton()
         }
         .frame(width: 44)
         .padding(.bottom, 10)
@@ -83,5 +84,33 @@ struct StatusBarView: View {
                     .overlay(UnevenRoundedRectangle(topLeadingRadius: 6).strokeBorder(Theme.border))
             )
         }
+    }
+}
+
+/// Invisible buttons that give the window its key commands: ⌘N new task, ⌘1–3 move the selected task.
+private struct KeyboardShortcuts: View {
+    let model: LibraryModel
+
+    var body: some View {
+        ZStack {
+            Button("New task") { model.focusComposer() }
+                .keyboardShortcut("n", modifiers: .command)
+            ForEach(QueueLevel.allCases, id: \.self) { level in
+                Button("Move to \(level.title)") { model.setQueueOfSelectedTask(to: level) }
+                    .keyboardShortcut(KeyEquivalent(Character("\(level.rawValue + 1)")), modifiers: .command)
+            }
+        }
+        .opacity(0)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct SettingsButton: View {
+    @State private var isPresented = false
+
+    var body: some View {
+        IconButton(symbol: "gearshape", help: "Settings", isActive: isPresented) { isPresented.toggle() }
+            .popover(isPresented: $isPresented, arrowEdge: .trailing) { SettingsPopover() }
     }
 }

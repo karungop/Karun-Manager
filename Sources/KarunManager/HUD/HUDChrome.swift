@@ -15,3 +15,24 @@ struct HUDChrome: ViewModifier {
 extension View {
     func hudChrome() -> some View { modifier(HUDChrome()) }
 }
+
+struct HUDCloseButton: View {
+    let help: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(hovering ? Theme.textNormal : Theme.textFaint)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(hovering ? Theme.hover : .clear))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help)
+    }
+}

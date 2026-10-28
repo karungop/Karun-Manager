@@ -24,6 +24,7 @@ struct QuickCaptureView: View {
                 .focused($isFocused)
                 .onSubmit { onSubmit(text) }
                 .onExitCommand(perform: onCancel)
+                HUDCloseButton(help: "Dismiss (esc)", action: onCancel)
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 15)

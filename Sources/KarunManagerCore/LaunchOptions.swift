@@ -5,6 +5,8 @@ public struct LaunchOptions: Equatable, Sendable {
     public var simulateWake = false
     /// Swap in `MockSystemEventMonitor` reporting a long idle time and run an idle check immediately.
     public var simulateIdle = false
+    /// Like `simulateIdle`, but with a Distraction Guard app (Terminal) frontmost: badge + notification, no HUD.
+    public var simulateFocus = false
     /// Use a throwaway in-memory store (handy alongside the simulate flags).
     public var inMemory = false
     /// In-memory store pre-filled with sample tasks, for UI work and screenshots.
@@ -12,12 +14,13 @@ public struct LaunchOptions: Equatable, Sendable {
     /// Debug builds: render the window and HUDs to PNGs in this directory, then quit.
     public var snapshotDirectory: String?
 
-    public var usesMockMonitor: Bool { simulateWake || simulateIdle }
+    public var usesMockMonitor: Bool { simulateWake || simulateIdle || simulateFocus }
 
     public init(arguments: [String]) {
         let flags = Set(arguments.dropFirst())
         simulateWake = flags.contains("--simulate-wake")
-        simulateIdle = flags.contains("--simulate-idle")
+        simulateFocus = flags.contains("--simulate-focus")
+        simulateIdle = flags.contains("--simulate-idle") || simulateFocus
         demo = flags.contains("--demo")
         if let index = arguments.firstIndex(of: "--snapshot"), arguments.indices.contains(index + 1) {
             snapshotDirectory = arguments[index + 1]
