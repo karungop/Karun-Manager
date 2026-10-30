@@ -15,6 +15,11 @@ struct TaskSection: Identifiable {
     let marker: Marker
     let tasks: [TaskItem]
 
+    var isUpcoming: Bool {
+        if case .upcoming = marker { return true }
+        return false
+    }
+
     /// Queue and category sections accept dropped tasks (moving them there), so they render even when empty.
     var isDropTarget: Bool {
         switch marker {
@@ -25,46 +30,73 @@ struct TaskSection: Identifiable {
 }
 
 extension SidebarItem {
-    /// Queue pages split by category; category pages (and All open) split by priority; Completed by day.
-    /// Repeats scheduled for later go in a trailing "Upcoming" section. Rows within a section are in
-    /// queue order (the order nudges will come in).
-    func sections(from tasks: [TaskItem], now: Date, calendar: Calendar = .current) -> [TaskSection] {
-        let visible = tasks.filter(includes)
-        if self == .completed {
+    /// Queue pages split by category; category pages (and All open) split by priority; Upcoming and
+    /// Completed by date. Rows within a queue section are in queue order (the order nudges come in).
+    func sections(
+        from tasks: [TaskItem],
+        now: Date,
+        categories: [String],
+        search: String = "",
+        calendar: Calendar = .current
+    ) -> [TaskSection] {
+        let query = search.trimmingCharacters(in: .whitespaces)
+        let visible = tasks.filter { task in
+            includes(task, now: now) && (query.isEmpty
+                || task.title.localizedCaseInsensitiveContains(query)
+                || (task.notes ?? "").localizedCaseInsensitiveContains(query))
+        }
+        switch self {
+        case .completed:
             return completedSections(visible, now: now, calendar: calendar)
+        case .upcoming:
+            return upcomingSections(visible, now: now, calendar: calendar)
+        default:
+            break
         }
 
-        let available = visible.filter { $0.isAvailable(at: now) }.sorted(by: MLFQ.isOrderedBefore)
+        let line = visible.sorted(by: MLFQ.isOrderedBefore)
         var sections: [TaskSection]
-        switch self {
-        case .queue:
-            let extra = Set(available.map(\.categoryName)).subtracting(TaskCategory.defaults).sorted()
-            sections = (TaskCategory.defaults + extra).map { name in
+        if case .queue = self {
+            let extra = Set(line.map(\.categoryName)).subtracting(categories).sorted()
+            sections = (categories + extra).map { name in
                 TaskSection(
                     id: "category-\(name)",
                     title: name,
                     marker: .category(name),
-                    tasks: available.filter { $0.categoryName == name }
+                    tasks: line.filter { $0.categoryName == name }
                 )
             }
-        default:
+        } else {
             sections = QueueLevel.allCases.map { level in
                 TaskSection(
                     id: "queue-\(level.rawValue)",
                     title: level.title,
                     marker: .queue(level),
-                    tasks: available.filter { $0.queueLevel == level.rawValue }
+                    tasks: line.filter { $0.queueLevel == level.rawValue }
                 )
             }
         }
-
-        let upcoming = visible
-            .filter { !$0.isAvailable(at: now) }
-            .sorted { ($0.availableFrom ?? .distantPast) < ($1.availableFrom ?? .distantPast) }
-        if !upcoming.isEmpty {
-            sections.append(TaskSection(id: "upcoming", title: "Upcoming", marker: .upcoming, tasks: upcoming))
-        }
+        // Empty sections stay visible as drop targets, except while searching.
+        if !query.isEmpty { sections.removeAll { $0.tasks.isEmpty } }
         return sections
+    }
+
+    private func upcomingSections(_ tasks: [TaskItem], now: Date, calendar: Calendar) -> [TaskSection] {
+        let soonestFirst = tasks.sorted { ($0.availableFrom ?? .distantPast) < ($1.availableFrom ?? .distantPast) }
+        let buckets = ["Tomorrow", "This week", "Later"]
+        let grouped = Dictionary(grouping: soonestFirst) { task -> String in
+            guard let day = task.availableFrom else { return "Later" }
+            if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now),
+               calendar.isDate(day, inSameDayAs: tomorrow) || day < tomorrow { return "Tomorrow" }
+            if let week = calendar.date(byAdding: .day, value: 7, to: calendar.startOfDay(for: now)), day < week {
+                return "This week"
+            }
+            return "Later"
+        }
+        return buckets.compactMap { bucket in
+            guard let tasks = grouped[bucket] else { return nil }
+            return TaskSection(id: "upcoming-\(bucket)", title: bucket, marker: .upcoming, tasks: tasks)
+        }
     }
 
     private func completedSections(_ tasks: [TaskItem], now: Date, calendar: Calendar) -> [TaskSection] {
@@ -86,15 +118,4 @@ extension SidebarItem {
         if let weekAgo = calendar.date(byAdding: .day, value: -7, to: now), date > weekAgo { return "This week" }
         return "Earlier"
     }
-}
-
-/// 1-based place in line within each queue, for available open tasks. This is the order nudges use.
-func queuePositions(of tasks: [TaskItem], now: Date) -> [UUID: Int] {
-    var positions: [UUID: Int] = [:]
-    var counts: [Int: Int] = [:]
-    for task in tasks.filter({ !$0.isCompleted && $0.isAvailable(at: now) }).sorted(by: MLFQ.isOrderedBefore) {
-        counts[task.queueLevel, default: 0] += 1
-        positions[task.id] = counts[task.queueLevel]
-    }
-    return positions
 }

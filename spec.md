@@ -39,8 +39,12 @@ An unlisted, lightweight macOS menu bar utility (`LSUIElement = true`) that prov
 - **Promotion Rule:** IF `skipCount >= 5` AND `queueLevel > 0`:
   - Set `queueLevel = queueLevel - 1` (promotes task to higher priority).
   - Reset `skipCount = 0`.
-- **Amendment — per-category skip direction:** each category is set to *promote* (rule above) or *demote*
-  (`queueLevel + 1`, capped at 2). Defaults: "Things to do" demotes; "Things to buy" and "People to call" promote.
+- **Amendment — per-category skip direction (replaces the promotion rule above):** each category is set to *stay*
+  (skips only send the task to the back of its queue) or *demote* (`queueLevel + 1` every N skips, capped at 2).
+  Promotion was dropped: skips only ever apply to the Up next task, which is already in the most important
+  non-empty queue. Defaults: "Things to do" demotes; "Things to buy" and "People to call" stay.
+- **Amendment — repeating tasks:** occurrences share a hidden `seriesID`; at most one unfinished occurrence per series
+  exists. Future occurrences live on an Upcoming page and can't be completed before their day.
 
 ## 4. Feature Specifications
 

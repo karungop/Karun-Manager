@@ -59,11 +59,20 @@ struct NudgePolicyTests {
 
 struct CaptureParserTests {
     @Test func parsesCategoryPrefixes() {
-        #expect(CaptureParser.parse("buy: oat milk")! == ("oat milk", TaskCategory.thingsToBuy))
-        #expect(CaptureParser.parse("Call: Mom")! == ("Mom", TaskCategory.peopleToCall))
-        #expect(CaptureParser.parse("  water plants ")! == ("water plants", TaskCategory.thingsToDo))
-        #expect(CaptureParser.parse("note: unknown prefix")! == ("note: unknown prefix", TaskCategory.thingsToDo))
+        #expect(CaptureParser.parse("buy: oat milk")! == ("oat milk", TaskCategory.thingsToBuy, true))
+        #expect(CaptureParser.parse("Call: Mom")! == ("Mom", TaskCategory.peopleToCall, true))
+        #expect(CaptureParser.parse("  water plants ")! == ("water plants", TaskCategory.thingsToDo, false))
+        #expect(CaptureParser.parse("note: unknown prefix")! == ("note: unknown prefix", TaskCategory.thingsToDo, false))
         #expect(CaptureParser.parse("   ") == nil)
+    }
+
+    @Test func customCategoriesAnswerToTheirTagName() {
+        let categories = ["Work", "Errands later", TaskCategory.thingsToBuy]
+        #expect(CaptureParser.parse("work: ship it", categories: categories)! == ("ship it", "Work", true))
+        #expect(CaptureParser.parse("errands-later: bank", categories: categories)! == ("bank", "Errands later", true))
+        #expect(CaptureParser.parse("buy: milk", categories: categories)! == ("milk", TaskCategory.thingsToBuy, true))
+        // "call:" is only an alias while People to call exists; otherwise it's plain text in the first category.
+        #expect(CaptureParser.parse("call: Mom", categories: categories)! == ("call: Mom", "Work", false))
     }
 
     @Test func parsesLaunchFlags() {

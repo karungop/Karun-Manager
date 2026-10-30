@@ -1,10 +1,26 @@
 import SwiftUI
 
 struct QuickCaptureView: View {
-    let onSubmit: (String) -> Void
+    let focus: HUDFocus
+    let categories: [String]
+    let onSubmit: (String, CaptureOptions) -> Void
     let onCancel: () -> Void
 
     @State private var text = ""
+    @State private var options: CaptureOptions
+
+    init(
+        focus: HUDFocus,
+        categories: [String],
+        onSubmit: @escaping (String, CaptureOptions) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.focus = focus
+        self.categories = categories
+        self.onSubmit = onSubmit
+        self.onCancel = onCancel
+        _options = State(initialValue: CaptureOptions(categories: categories))
+    }
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -22,17 +38,21 @@ struct QuickCaptureView: View {
                 .font(.system(size: 20))
                 .foregroundStyle(Theme.textNormal)
                 .focused($isFocused)
-                .onSubmit { onSubmit(text) }
+                .onSubmit { onSubmit(text, options) }
                 .onExitCommand(perform: onCancel)
                 HUDCloseButton(help: "Dismiss (esc)", action: onCancel)
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 15)
 
+            CaptureOptionsBar(categories: categories, options: $options)
+                .padding(.horizontal, 18)
+                .padding(.bottom, 12)
+
             HLine()
 
             HStack(spacing: 14) {
-                Text("Prefix with").foregroundStyle(Theme.textFaint)
+                Text("Or prefix").foregroundStyle(Theme.textFaint)
                     + Text("  buy:  call:  todo:").foregroundStyle(Theme.tagText)
                 Spacer()
                 HStack(spacing: 5) { KbdChip(keys: "↩"); Text("save") }
@@ -44,6 +64,7 @@ struct QuickCaptureView: View {
             .padding(.vertical, 8)
         }
         .hudChrome()
-        .onAppear { isFocused = true }
+        .onAppear { if focus.focusOnAppear { isFocused = true } }
+        .onChange(of: focus.captureRequest) { isFocused = true }
     }
 }

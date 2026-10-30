@@ -2,13 +2,11 @@ import KarunManagerCore
 import SwiftUI
 
 /// The in-window place to create tasks (the HUD is only for when the window isn't in front).
+/// Category / priority / repeat live on `LibraryModel` so window shortcuts (⌘1–3) can set them.
 struct TaskComposer: View {
     @Bindable var model: LibraryModel
 
     @State private var text = ""
-    @State private var category = TaskCategory.thingsToDo
-    @State private var level = QueueLevel.medium
-    @State private var repeatRule = RepeatRule.never
     @FocusState private var isFocused: Bool
 
     private var canSubmit: Bool {
@@ -32,23 +30,23 @@ struct TaskComposer: View {
                 .focused($isFocused)
                 .onSubmit(submit)
                 .onExitCommand { isFocused = false }
-                if !isFocused { KbdChip(keys: "⌘N") }
+                KbdChip(keys: isFocused ? "⌘1–3 priority" : "⌘N")
             }
 
             // Stacks onto two lines when the pane is too narrow for one.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
-                    CategoryMenu(selection: $category)
-                    RepeatMenu(selection: $repeatRule)
+                    CategoryMenu(categories: model.categories, selection: $model.composerCategory)
+                    RepeatMenu(selection: $model.composerRepeat)
                     Spacer(minLength: 12)
-                    QueuePicker(selection: level) { level = $0 }
+                    QueuePicker(selection: model.composerLevel) { model.composerLevel = $0 }
                     addButton
                 }
                 VStack(alignment: .leading, spacing: 8) {
-                    QueuePicker(selection: level) { level = $0 }
+                    QueuePicker(selection: model.composerLevel) { model.composerLevel = $0 }
                     HStack {
-                        CategoryMenu(selection: $category)
-                        RepeatMenu(selection: $repeatRule)
+                        CategoryMenu(categories: model.categories, selection: $model.composerCategory)
+                        RepeatMenu(selection: $model.composerRepeat)
                         Spacer()
                         addButton
                     }
@@ -62,7 +60,7 @@ struct TaskComposer: View {
                 .strokeBorder(isFocused ? Theme.accent.opacity(0.7) : Theme.border)
         )
         .onChange(of: model.composerFocusRequest) { isFocused = true }
-        .onChange(of: model.selection, initial: true) { applyDefaults(from: model.selection) }
+        .onChange(of: isFocused) { model.isComposerFocused = isFocused }
     }
 
     private var addButton: some View {
@@ -74,60 +72,9 @@ struct TaskComposer: View {
     }
 
     private func submit() {
-        guard model.addTask(text: text, categoryName: category, level: level, repeatRule: repeatRule) else { return }
+        guard model.submitComposer(text) else { return }
         text = ""
-        repeatRule = .never
         isFocused = true  // keep going: rapid entry
-    }
-
-    /// New tasks inherit whichever queue or category is open in the sidebar.
-    private func applyDefaults(from selection: SidebarItem) {
-        switch selection {
-        case .queue(let selected): level = selected
-        case .category(let selected): category = selected
-        default: break
-        }
-    }
-}
-
-/// The category as a tag chip that opens a menu of categories.
-private struct CategoryMenu: View {
-    @Binding var selection: String
-
-    @State private var hovering = false
-
-    var body: some View {
-        Menu {
-            ForEach(TaskCategory.defaults, id: \.self) { name in
-                Button {
-                    selection = name
-                } label: {
-                    if name == selection {
-                        Label(name, systemImage: "checkmark")
-                    } else {
-                        Text(name)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Text(CategoryStyle.tag(selection)).lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
-            }
-            .fixedSize()
-            .font(.system(size: 12))
-            .foregroundStyle(Theme.tagText)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 4)
-            .background(Capsule().fill(Theme.tagBackground.opacity(hovering ? 1.6 : 1)))
-            .contentShape(Capsule())
-        }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .onHover { hovering = $0 }
-        .help("Category — or type buy: / call: / todo: before the task")
     }
 }
 

@@ -5,6 +5,7 @@ import SwiftUI
 struct InspectorPane: View {
     @Bindable var model: LibraryModel
     let tasks: [TaskItem]
+    let index: LibraryIndex
 
     private var selectedTask: TaskItem? {
         tasks.first { $0.id == model.selectedTaskID }
@@ -34,13 +35,11 @@ struct InspectorPane: View {
         .background(Theme.bgSecondary)
     }
 
-    // `tasks` changes re-render this; `revision` covers snoozes, which SwiftData doesn't see.
     @ViewBuilder
     private var upNext: some View {
-        let _ = model.revision
         VStack(alignment: .leading, spacing: 10) {
             SectionTitle("Up next")
-            if let next = try? model.store.nextTask() {
+            if let next = index.upNext {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         TagPill(categoryName: next.categoryName)
@@ -59,7 +58,7 @@ struct InspectorPane: View {
                             .buttonStyle(ObsidianButtonStyle())
                         Button("Skip") { model.skip(next) }
                             .buttonStyle(ObsidianButtonStyle())
-                            .help("Counts toward promotion, like skipping a nudge")
+                            .help("Sends it to the back of its queue and counts toward moving it")
                     }
                 }
                 .padding(12)
@@ -77,10 +76,13 @@ struct InspectorPane: View {
         VStack(alignment: .leading, spacing: 4) {
             SectionTitle("Properties")
             if let task = selectedTask {
+                TitleEditor(model: model, task: task)
+                    .id(task.id)
+                    .padding(.bottom, 8)
                 PropertyRow(symbol: "tag", key: "category") {
                     Menu(task.categoryName) {
-                        ForEach(TaskCategory.defaults, id: \.self) { name in
-                            Button(name) { model.perform { try $0.setCategory(task, to: name) } }
+                        ForEach(model.categories, id: \.self) { name in
+                            Button(name) { model.setCategory(task, to: name) }
                         }
                     }
                     .menuStyle(.borderlessButton)
@@ -91,9 +93,13 @@ struct InspectorPane: View {
                 }
                 QueuePicker(selection: QueueLevel(task: task), fillsWidth: true) { model.setQueue(task, to: $0) }
                     .padding(.bottom, 4)
+                DueDateRow(model: model, task: task)
+                if !task.isCompleted {
+                    SnoozeRow(model: model, task: task, now: index.now)
+                }
                 let direction = model.skipDirection(for: task.categoryName)
                 PropertyRow(symbol: "arrow.uturn.right", key: "skips") {
-                    SkipMeter(task: task, direction: direction)
+                    SkipMeter(task: task, direction: direction, threshold: model.skipThreshold)
                 }
                 PropertyRow(symbol: direction.symbol, key: "on skip") {
                     Menu {
@@ -105,7 +111,7 @@ struct InspectorPane: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .help("Applies to every task in \(task.categoryName). \(direction.explanation)")
+                    .help("Applies to every task in \(task.categoryName). \(direction.explanation(threshold: model.skipThreshold))")
                 }
                 PropertyRow(symbol: "repeat", key: "repeat") {
                     Menu {
@@ -117,12 +123,16 @@ struct InspectorPane: View {
                     .fixedSize()
                     .help("Completing a repeating task schedules the next one")
                 }
-                if !task.isCompleted, let next = task.availableFrom, next > model.now {
-                    PropertyRow(symbol: "calendar.badge.clock", key: "available") {
+                if !task.isCompleted, let next = task.availableFrom, next > index.now {
+                    PropertyRow(symbol: "calendar.badge.clock", key: "comes back") {
                         Text(next, format: .dateTime.weekday(.abbreviated).month().day())
+                        Button("Now") { model.makeAvailableNow(task) }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Theme.tagText)
+                            .help("Move it into the open queues today")
                     }
                 }
-                PropertyRow(symbol: "calendar", key: "created") {
+                PropertyRow(symbol: "clock", key: "created") {
                     Text(task.createdAt, format: .dateTime.month().day().hour().minute())
                 }
                 PropertyRow(symbol: "checkmark.circle", key: "status") {
@@ -132,8 +142,142 @@ struct InspectorPane: View {
                         Text("Open")
                     }
                 }
+                NotesEditor(model: model, task: task)
+                    .id(task.id)
+                    .padding(.top, 12)
             } else {
                 Placeholder("Select a task to see its properties.")
+            }
+        }
+    }
+}
+
+/// Click-to-edit title. Saves on Return or when focus leaves; Esc reverts.
+private struct TitleEditor: View {
+    @Bindable var model: LibraryModel
+    let task: TaskItem
+
+    @State private var draft = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField("", text: $draft, prompt: Text("Task title").foregroundStyle(Theme.textFaint), axis: .vertical)
+            .textFieldStyle(.plain)
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(Theme.textNormal)
+            .lineLimit(1...4)
+            .fixedSize(horizontal: false, vertical: true)
+            .focused($isFocused)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 6).fill(isFocused ? Color.black.opacity(0.2) : .clear))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(isFocused ? Theme.accent.opacity(0.6) : .clear))
+            .padding(.horizontal, -6)
+            .onAppear { draft = task.title }
+            .onChange(of: task.title) { if !isFocused { draft = task.title } }
+            .onSubmit(commit)
+            .onExitCommand {
+                draft = task.title
+                isFocused = false
+            }
+            .onChange(of: isFocused) { if !isFocused { commit() } }
+            .onChange(of: model.titleEditRequest) { isFocused = true }
+            .help("Click to rename (or press Return on a selected task)")
+    }
+
+    private func commit() {
+        guard draft != task.title else { return }
+        model.setTitle(task, to: draft)
+        draft = task.title  // blank input is rejected; show the real title again
+        isFocused = false
+    }
+}
+
+/// Obsidian-style note body under the properties. Saves when focus leaves.
+private struct NotesEditor: View {
+    @Bindable var model: LibraryModel
+    let task: TaskItem
+
+    @State private var draft = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            SectionTitle("Notes")
+            TextField("", text: $draft, prompt: Text("Add notes…").foregroundStyle(Theme.textFaint), axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.textNormal)
+                .lineLimit(3...12)
+                .focused($isFocused)
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Theme.bgPrimary))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(isFocused ? Theme.accent.opacity(0.6) : Theme.border))
+                .onAppear { draft = task.notes ?? "" }
+                .onChange(of: isFocused) { if !isFocused { model.setNotes(task, to: draft) } }
+        }
+    }
+}
+
+private struct DueDateRow: View {
+    @Bindable var model: LibraryModel
+    let task: TaskItem
+
+    var body: some View {
+        PropertyRow(symbol: "calendar", key: "due") {
+            if let due = task.dueDate {
+                DatePicker(
+                    "",
+                    selection: Binding(get: { due }, set: { model.setDueDate(task, to: $0) }),
+                    displayedComponents: .date
+                )
+                .labelsHidden()
+                .datePickerStyle(.compact)
+                .fixedSize()
+                Button {
+                    model.setDueDate(task, to: nil)
+                } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.textFaint)
+                .help("Remove due date")
+            } else {
+                Menu("Add…") {
+                    Button("Today") { setDue(daysFromNow: 0) }
+                    Button("Tomorrow") { setDue(daysFromNow: 1) }
+                    Button("In a week") { setDue(daysFromNow: 7) }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .foregroundStyle(Theme.textFaint)
+            }
+        }
+    }
+
+    private func setDue(daysFromNow days: Int) {
+        let calendar = Calendar.current
+        let day = calendar.date(byAdding: .day, value: days, to: calendar.startOfDay(for: Date()))
+        model.setDueDate(task, to: day)
+    }
+}
+
+private struct SnoozeRow: View {
+    @Bindable var model: LibraryModel
+    let task: TaskItem
+    let now: Date
+
+    var body: some View {
+        PropertyRow(symbol: "moon.zzz", key: "snooze") {
+            if let until = task.snoozedUntil, until > now {
+                Text("until \(until, format: .dateTime.hour().minute())")
+                Button("Wake") { model.unsnooze(task) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.tagText)
+            } else {
+                Button("Snooze 1h") { model.snooze(task) }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.textFaint)
             }
         }
     }
@@ -190,26 +334,27 @@ private struct PropertyRow<Value: View>: View {
 private struct SkipMeter: View {
     let task: TaskItem
     let direction: SkipDirection
+    let threshold: Int
 
     var body: some View {
         if let target = MLFQ.nextLevel(for: task, direction: direction) {
             HStack(spacing: 8) {
                 HStack(spacing: 3) {
-                    ForEach(0..<MLFQ.promotionThreshold, id: \.self) { index in
+                    ForEach(0..<threshold, id: \.self) { index in
                         Capsule()
                             .fill(index < task.skipCount ? Theme.accent : Theme.border)
-                            .frame(width: 10, height: 5)
+                            .frame(width: max(3, 56 / CGFloat(threshold)), height: 5)
                     }
                 }
-                Text("\(task.skipCount)/\(MLFQ.promotionThreshold)")
+                Text("\(task.skipCount)/\(threshold)")
                     .foregroundStyle(Theme.textMuted)
                 Image(systemName: direction.symbol)
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(target.color)
             }
-            .help("Moves to \(target.title) after \(MLFQ.promotionThreshold) skips")
+            .help("Moves to \(target.title) after \(threshold) skips")
         } else {
-            Text("\(task.skipCount) · \(direction == .promote ? "top" : "bottom") queue")
+            Text(direction == .stay ? "\(task.skipCount) · stays in queue" : "\(task.skipCount) · bottom queue")
         }
     }
 }
