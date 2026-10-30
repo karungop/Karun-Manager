@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 import KarunManagerCore
 import SwiftData
 
@@ -8,10 +7,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let options: LaunchOptions
     private var store: TaskStore!
     private var monitor: SystemEventMonitoring!
-    private let policy = NudgePolicy()
+    private let settings = AppSettings()
+    private var settingsWindow: SettingsWindowController!
     private let hud = HUDPresenter()
     private var statusBar: StatusBarController!
-    private var hotkey: HotkeyMonitor?
     private var idleTimer: Timer?
     private var library: LibraryModel!
     private var mainWindow: MainWindowController!
@@ -22,25 +21,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        store = TaskStore(container: openContainer(), defaults: makeDefaults())
+        if options.demo {
+            do { try store.seedDemoData() } catch { NSLog("KarunManager: demo seed failed: \(error)") }
+        }
+        // Merge duplicate copies of repeating tasks left by older versions (keeps one per series).
         do {
-            store = TaskStore(
-                container: try TaskStore.makeContainer(inMemory: options.inMemory),
-                defaults: makeDefaults()
-            )
-            if options.demo { try store.seedDemoData() }
+            let removed = try store.repairRepeatingSeries()
+            if removed > 0 { NSLog("KarunManager: removed \(removed) duplicate repeating task(s)") }
         } catch {
-            fatalError("Failed to open task store: \(error)")
+            NSLog("KarunManager: repeating-task repair failed: \(error)")
         }
 
-        library = LibraryModel(store: store)
+        library = LibraryModel(store: store, settings: settings)
         mainWindow = MainWindowController(model: library)
+        settingsWindow = SettingsWindowController(model: library)
+        library.onOpenSettings = { [weak self] in self?.settingsWindow.show() }
+        MainMenu.install(.init(
+            openSettings: { [weak self] in self?.settingsWindow.show() },
+            newTask: { [weak self] in
+                guard let self else { return }
+                if !mainWindow.isFrontmost { openWindow() }
+                library.focusComposer()
+            },
+            find: { [weak self] in
+                guard let self else { return }
+                if !mainWindow.isFrontmost { openWindow() }
+                library.focusSearch()
+            }
+        ))
+        observeSettings()
 
         NotificationSetting.registerDefaults()
+        notifications.onAvailabilityChange = { [weak self] native in
+            self?.library.usesSystemNotifications = native
+            self?.syncDueReminders()
+        }
         notifications.requestAuthorization()
         notifications.onResponse = { [weak self] id, action in self?.handleNotification(taskID: id, action: action) }
         library.didMutate = { [weak self] in self?.syncDueReminders() }
         library.onSkipMovedTask = { [weak self] task, old, new in
-            self?.notifications.postQueueChange(for: task, from: old, to: new)
+            guard let self else { return }
+            notifications.postQueueChange(for: task, from: old, to: new, threshold: store.skipThreshold)
         }
         syncDueReminders()
 
@@ -50,10 +72,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onShowNextTask: { [weak self] in self?.showNextTaskRequested() }
         )
 
-        hotkey = HotkeyMonitor { [weak self] key, isLocal in
-            self?.handleKey(key, isLocal: isLocal) ?? false
-        }
-        requestAccessibilityIfNeeded()
+        // Carbon hot keys: they swallow the keystroke and need no Accessibility permission.
+        HotKeyCenter.shared.onPress = { [weak self] key in self?.handleHotKey(key) }
+        hud.onVisibilityChange = { visible in HotKeyCenter.shared.setEscapeActive(visible) }
+        applyQuickCaptureHotkey()
 
         monitor = makeMonitor()
         monitor.startObservingWake { [weak self] in self?.handle(.wake) }
@@ -61,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         idleTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.library.now = Date()
+                self?.announceDueTasks()
                 self?.handle(.idleTick)
             }
         }
@@ -88,6 +111,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindow.show()
     }
 
+    /// Opens the task database. If it can't be opened (corrupt file, failed migration), offers to set it
+    /// aside and start fresh instead of crashing at launch.
+    private func openContainer() -> ModelContainer {
+        do {
+            return try TaskStore.makeContainer(inMemory: options.inMemory)
+        } catch {
+            NSLog("KarunManager: failed to open task store: \(error)")
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = "Karun Manager couldn't open your tasks"
+            alert.informativeText = "The task database couldn't be read (\(error.localizedDescription)).\n\n"
+                + "“Start fresh” renames the old files with “-damaged” and the date (nothing is deleted), "
+                + "then opens an empty task list."
+            alert.addButton(withTitle: "Start fresh")
+            alert.addButton(withTitle: "Quit")
+            NSApp.activate()
+            guard alert.runModal() == .alertFirstButtonReturn else { exit(1) }
+            TaskStore.moveStoreAside()
+            do {
+                return try TaskStore.makeContainer()
+            } catch {
+                NSLog("KarunManager: fresh store failed too, keeping tasks in memory: \(error)")
+                return try! TaskStore.makeContainer(inMemory: true)
+            }
+        }
+    }
+
+    /// Keeps services that copy a setting in sync when it changes.
+    private func observeSettings() {
+        let hotkey = settings.quickCaptureHotkey
+        withObservationTracking {
+            notifications.dueReminderHour = settings.dueReminderHour
+            _ = settings.quickCaptureHotkey
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.observeSettings()
+                self.syncDueReminders()
+                if self.settings.quickCaptureHotkey != hotkey { self.applyQuickCaptureHotkey() }
+            }
+        }
+    }
+
     /// Throwaway runs (`--demo`, `--in-memory`) get a fresh preferences suite so they never touch real settings.
     private func makeDefaults() -> UserDefaults {
         guard options.inMemory else { return .standard }
@@ -110,19 +176,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return mock
     }
 
-    /// Global key monitors only receive events once the user grants Accessibility access.
-    private func requestAccessibilityIfNeeded() {
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
+    private func applyQuickCaptureHotkey() {
+        let registered = HotKeyCenter.shared.setQuickCapture(settings.quickCaptureHotkey)
+        settings.quickCaptureHotkeyTaken = !registered
+        statusBar.setQuickCaptureShortcut(settings.quickCaptureHotkey)
     }
 
     // MARK: - Triggers
 
     private func handle(_ trigger: NudgeTrigger) {
         // Never interrupt a HUD that's already up, and never pop one over the main window.
-        guard hud.current == nil, !mainWindow.isFrontmost else { return }
+        guard hud.current == nil, !mainWindow.isFrontmost else {
+            if options.logNudges {
+                NSLog("KarunManager nudge check: skipped (hudShowing=\(hud.current != nil) windowInFront=\(mainWindow.isFrontmost))")
+            }
+            return
+        }
 
-        let decision = policy.evaluate(
+        let decision = settings.nudgePolicy.evaluate(
             trigger,
             now: Date(),
             lastNudgeAt: library.lastNudgeAt,
@@ -131,10 +202,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hasPendingTask: (try? store.nextTask()) != nil
         )
 
+        if options.logNudges {
+            let since = library.lastNudgeAt.map { "\(Int(Date().timeIntervalSince($0)))s" } ?? "never"
+            NSLog("KarunManager nudge check: trigger=\(trigger) idle=\(Int(monitor.systemIdleTime))s sinceLastNudge=\(since) frontmost=\(monitor.frontmostBundleIdentifier ?? "?") hasTask=\((try? store.nextTask()) != nil) decision=\(decision)")
+        }
         switch decision {
         case .none: break
-        case .showQuickCapture: showQuickCapture()
-        case .showNudge: showNudge()
+        // Automatic HUDs are passive: they never take the keyboard from the app you're typing in.
+        case .showQuickCapture: showQuickCapture(takesFocus: false)
+        case .showNudge: showNudge(takesFocus: false)
         case .badgeOnly: guardedNudge()
         }
     }
@@ -155,6 +231,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notifications.scheduleDueReminders(for: upcoming)
     }
 
+    private func announceDueTasks() {
+        notifications.announceDueTasksIfNeeded((try? store.pendingTasks()) ?? [])
+    }
+
     private func handleNotification(taskID: UUID, action: NotificationManager.Action?) {
         guard let task = try? store.pendingTasks().first(where: { $0.id == taskID }) else { return }
         statusBar.setBadged(false)
@@ -170,52 +250,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Keys
 
-    private func handleKey(_ key: GlobalKey, isLocal: Bool) -> Bool {
+    private func handleHotKey(_ key: HotKeyCenter.Key) {
         switch key {
         case .quickCapture:
             quickCaptureRequested()
-            return true
         case .escape:
-            guard hud.current != nil else { return false }
-            // While the panel is key its SwiftUI views already handle Esc.
-            if isLocal && hud.panel.isKeyWindow { return false }
-            hud.cancel()
-            return true
+            guard hud.current != nil else { return }
+            if hud.isEngaged {
+                // You're working in the HUD: Esc means what it says on the button (Skip / dismiss).
+                hud.cancel()
+            } else {
+                // Esc from another app just puts the HUD away. It isn't counted as a skip, because
+                // you may have meant it for that app.
+                hud.dismiss()
+            }
         }
     }
 
     // MARK: - Quick Capture
 
-    /// With the window in front, capture happens in its composer; otherwise ⌥Space toggles the HUD.
+    /// With the window in front, capture happens in its composer. Otherwise the shortcut toggles the
+    /// Quick Capture HUD, or, if a passive nudge is showing, jumps into that nudge's add-task line.
     private func quickCaptureRequested() {
         if mainWindow.isFrontmost {
             library.focusComposer()
-        } else if hud.current == .quickCapture {
+        } else if hud.current == .nudge && !hud.isEngaged {
+            hud.engage()
+        } else if hud.current == .quickCapture && hud.isEngaged {
             hud.dismiss()
+        } else if hud.current == .quickCapture {
+            hud.engage()
         } else {
-            showQuickCapture()
+            showQuickCapture(takesFocus: true)
         }
     }
 
-    private func showQuickCapture() {
-        hud.present(.quickCapture, onCancel: { [weak self] in self?.hud.dismiss() }) {
+    private func showQuickCapture(takesFocus: Bool) {
+        hud.present(.quickCapture, takesFocus: takesFocus, onCancel: { [weak self] in self?.hud.dismiss() }) {
             QuickCaptureView(
-                onSubmit: { [weak self] text in self?.saveCapture(text) },
+                focus: hud.focus,
+                categories: store.categories,
+                onSubmit: { [weak self] text, options in self?.saveCapture(text, options: options) },
                 onCancel: { [weak self] in self?.hud.dismiss() }
             )
         }
     }
 
-    private func saveCapture(_ text: String) {
-        guard addTask(fromHUD: text) else { return }
+    private func saveCapture(_ text: String, options: CaptureOptions) {
+        guard addTask(fromHUD: text, options: options) else { return }
         hud.dismiss()
     }
 
+    /// A typed `buy:` / `call:` / `todo:` prefix still wins over the HUD's category menu.
     @discardableResult
-    private func addTask(fromHUD text: String) -> Bool {
-        guard let parsed = CaptureParser.parse(text) else { return false }
-        library.perform { try $0.add(title: parsed.title, categoryName: parsed.categoryName) }
-        return true
+    private func addTask(fromHUD text: String, options: CaptureOptions) -> Bool {
+        library.addTask(text: text, categoryName: options.categoryName, level: options.level)
     }
 
     // MARK: - Nudge
@@ -224,26 +313,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if mainWindow.isFrontmost {
             library.selectedTaskID = try? store.nextTask()?.id
         } else {
-            showNudge()
+            showNudge(takesFocus: true)
         }
     }
 
-    private func showNudge() {
+    private func showNudge(takesFocus: Bool) {
         statusBar.setBadged(false)
         guard let task = try? store.nextTask() else {
-            showQuickCapture()
+            showQuickCapture(takesFocus: takesFocus)
             return
         }
         library.lastNudgeAt = Date()
         let skip = { [weak self] in self?.resolve { $0.skip(task) } }
-        hud.present(.nudge, onCancel: { skip() }) {
+        hud.present(.nudge, takesFocus: takesFocus, onCancel: { skip() }) {
             NudgeView(
                 task: task,
+                focus: hud.focus,
                 skipDirection: store.skipDirection(for: task.categoryName),
+                skipThreshold: store.skipThreshold,
+                categories: store.categories,
                 onDone: { [weak self] in self?.resolve { $0.complete(task) } },
                 onSnooze: { [weak self] in self?.resolve { $0.snooze(task) } },
                 onSkip: { skip() },
-                onAdd: { [weak self] text in self?.addTask(fromHUD: text) ?? false }
+                onAdd: { [weak self] text, options in self?.addTask(fromHUD: text, options: options) ?? false }
             )
         }
     }
@@ -269,10 +361,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             (1.6, { capture(self.mainWindow.window?.contentView, "main-window.png") }),
             (1.7, { self.library.selection = .queue(.medium) }),
             (2.2, { capture(self.mainWindow.window?.contentView, "queue-page.png") }),
+            (2.25, { self.library.selection = .upcoming }),
+            (2.28, { capture(self.mainWindow.window?.contentView, "upcoming-page.png") }),
             (2.3, { self.library.selection = .category(TaskCategory.thingsToDo) }),
             (2.8, { capture(self.mainWindow.window?.contentView, "category-page.png") }),
-            (2.9, { self.showNudge() }),
-            (3.4, { capture(self.hud.panel.contentView, "nudge-hud.png"); self.hud.dismiss(); self.showQuickCapture() }),
+            (2.9, { self.showNudge(takesFocus: true) }),
+            (3.4, { capture(self.hud.panel.contentView, "nudge-hud.png"); self.hud.dismiss(); self.showQuickCapture(takesFocus: true) }),
             (4.0, { capture(self.hud.panel.contentView, "quick-capture-hud.png"); NSApp.terminate(nil) }),
         ]
         for (delay, step) in steps {

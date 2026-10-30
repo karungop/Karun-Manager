@@ -181,3 +181,45 @@ struct DropHighlight: ViewModifier {
 extension View {
     func dropHighlight(_ isActive: Bool) -> some View { modifier(DropHighlight(isActive: isActive)) }
 }
+
+/// The category as a tag chip that opens a menu of categories.
+struct CategoryMenu: View {
+    let categories: [String]
+    @Binding var selection: String
+
+    @State private var hovering = false
+
+    var body: some View {
+        Menu {
+            ForEach(categories, id: \.self) { name in
+                Button {
+                    selection = name
+                } label: {
+                    if name == selection {
+                        Label(name, systemImage: "checkmark")
+                    } else {
+                        Text(name)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Text(CategoryStyle.tag(selection)).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+            }
+            .fixedSize()
+            .font(.system(size: 12))
+            .foregroundStyle(Theme.tagText)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Theme.tagBackground.opacity(hovering ? 1.6 : 1)))
+            .contentShape(Capsule())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .help("Category — or type buy: / call: / todo: before the task")
+    }
+}

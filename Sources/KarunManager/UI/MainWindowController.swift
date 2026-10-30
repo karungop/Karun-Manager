@@ -28,6 +28,11 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         NSApp.activate()
     }
 
+    /// Undo/Redo (⌘Z) in the window act on task changes; text fields keep their own undo while editing.
+    func windowWillReturnUndoManager(_ window: NSWindow) -> UndoManager? {
+        model.undoManager
+    }
+
     func windowWillClose(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
     }
@@ -47,7 +52,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.delegate = self
         window.contentView = NSHostingView(
-            rootView: MainWindowView(model: model).modelContainer(model.store.container)
+            rootView: MainWindowView(model: model)
         )
         window.center()
         window.setFrameAutosaveName("KarunManagerMainWindow")

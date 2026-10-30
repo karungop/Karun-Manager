@@ -63,14 +63,15 @@ extension QueueLevel {
 enum CategoryStyle {
     /// "Things to buy" → "#things-to-buy", rendered like an Obsidian tag.
     static func tag(_ categoryName: String) -> String {
-        "#" + categoryName.lowercased().replacingOccurrences(of: " ", with: "-")
+        "#" + CaptureParser.slug(categoryName)
     }
 
     static func symbol(_ categoryName: String) -> String {
         switch categoryName {
+        case TaskCategory.thingsToDo: "checklist"
         case TaskCategory.thingsToBuy: "cart"
         case TaskCategory.peopleToCall: "phone"
-        default: "checklist"
+        default: "folder"
         }
     }
 }
@@ -78,22 +79,22 @@ enum CategoryStyle {
 extension SkipDirection {
     var title: String {
         switch self {
-        case .promote: "Promote"
+        case .stay: "Stay"
         case .demote: "Demote"
         }
     }
 
     var symbol: String {
         switch self {
-        case .promote: "arrow.up"
+        case .stay: "arrow.uturn.down"
         case .demote: "arrow.down"
         }
     }
 
-    var explanation: String {
+    func explanation(threshold: Int) -> String {
         switch self {
-        case .promote: "Every \(MLFQ.promotionThreshold) skips → up a queue"
-        case .demote: "Every \(MLFQ.promotionThreshold) skips → down a queue"
+        case .stay: "Skips send it to the back of its queue"
+        case .demote: "Every \(threshold) skips → down a queue"
         }
     }
 }

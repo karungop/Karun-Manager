@@ -5,10 +5,14 @@ import SwiftUI
 struct SidebarView: View {
     @Bindable var model: LibraryModel
     let tasks: [TaskItem]
+    let index: LibraryIndex
 
     @State private var queuesExpanded = true
     @State private var categoriesExpanded = true
     @State private var dropTarget: SidebarItem?
+    @State private var isAddingCategory = false
+    @State private var renamingCategory: String?
+    @State private var deletingCategory: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -39,20 +43,52 @@ struct SidebarView: View {
                         }
                     }
 
-                    FolderHeader(title: "Categories", isExpanded: $categoriesExpanded)
+                    FolderHeader(title: "Categories", isExpanded: $categoriesExpanded) {
+                        IconButton(symbol: "plus", help: "New category") { isAddingCategory = true }
+                            .scaleEffect(0.8)
+                            .popover(isPresented: $isAddingCategory, arrowEdge: .trailing) {
+                                CategoryNamePopover(title: "New category", initial: "", action: "Add") { name in
+                                    model.addCategory(name)
+                                }
+                            }
+                    }
                     if categoriesExpanded {
-                        ForEach(TaskCategory.defaults, id: \.self) { name in
+                        ForEach(model.categories, id: \.self) { name in
                             row(.category(name), indent: true)
+                                .contextMenu {
+                                    Button("Rename…") { renamingCategory = name }
+                                    Button("Delete…", role: .destructive) { deletingCategory = name }
+                                        .disabled(model.categories.count <= 1)
+                                }
+                                .popover(isPresented: Binding(
+                                    get: { renamingCategory == name },
+                                    set: { if !$0 { renamingCategory = nil } }
+                                ), arrowEdge: .trailing) {
+                                    CategoryNamePopover(title: "Rename category", initial: name, action: "Rename") { new in
+                                        model.renameCategory(name, to: new)
+                                    }
+                                }
                         }
                     }
 
                     Spacer().frame(height: 6)
+                    row(.upcoming)
                     row(.completed)
                 }
                 .padding(.horizontal, 8)
             }
         }
         .background(Theme.bgSecondary)
+        .confirmationDialog(
+            "Delete “\(deletingCategory ?? "")”?",
+            isPresented: Binding(get: { deletingCategory != nil }, set: { if !$0 { deletingCategory = nil } }),
+            presenting: deletingCategory
+        ) { name in
+            Button("Delete category", role: .destructive) { model.deleteCategory(name) }
+        } message: { name in
+            let fallback = model.categories.first { $0 != name } ?? ""
+            Text("Its tasks (open and completed) move to “\(fallback)”.")
+        }
     }
 
     private func row(_ item: SidebarItem, indent: Bool = false) -> some View {
@@ -66,7 +102,7 @@ struct SidebarView: View {
     private func row(_ item: SidebarItem, indent: Bool, @ViewBuilder icon: () -> some View) -> some View {
         SidebarRow(
             title: item.title,
-            count: tasks.filter(item.includes).count,
+            count: index.counts[item] ?? 0,
             isSelected: model.selection == item,
             indent: indent,
             icon: icon()
@@ -94,7 +130,7 @@ struct SidebarView: View {
             switch item {
             case .queue(let level): model.setQueue(task, to: level)
             case .category(let name): model.setCategory(task, to: name)
-            case .allOpen, .completed: break
+            case .allOpen, .upcoming, .completed: break
             }
         }
         return true
@@ -105,35 +141,104 @@ private extension SidebarItem {
     var acceptsDrops: Bool {
         switch self {
         case .queue, .category: true
-        case .allOpen, .completed: false
+        case .allOpen, .upcoming, .completed: false
         }
     }
 }
 
-private struct FolderHeader: View {
+private struct FolderHeader<Accessory: View>: View {
     let title: String
     @Binding var isExpanded: Bool
+    @ViewBuilder var accessory: Accessory
 
     var body: some View {
-        Button {
-            withAnimation(.easeOut(duration: 0.12)) { isExpanded.toggle() }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    .frame(width: 12)
-                Text(title)
-                Spacer()
+        HStack(spacing: 0) {
+            Button {
+                withAnimation(.easeOut(duration: 0.12)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .frame(width: 12)
+                    Text(title)
+                    Spacer()
+                }
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.textMuted)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 5)
+                .contentShape(Rectangle())
             }
-            .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(Theme.textMuted)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 5)
-            .padding(.top, 8)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            accessory
         }
-        .buttonStyle(.plain)
+        .padding(.top, 8)
+    }
+}
+
+extension FolderHeader where Accessory == EmptyView {
+    init(title: String, isExpanded: Binding<Bool>) {
+        self.init(title: title, isExpanded: isExpanded) { EmptyView() }
+    }
+}
+
+/// Small popover with a name field, for adding or renaming a category.
+private struct CategoryNamePopover: View {
+    let title: String
+    let initial: String
+    let action: String
+    /// Returns false if the name was rejected (blank or already taken).
+    let onCommit: (String) -> Bool
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var rejected = false
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(Theme.textNormal)
+            TextField("", text: $name, prompt: Text("Name").foregroundStyle(Theme.textFaint))
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.textNormal)
+                .padding(6)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.2)))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(rejected ? Theme.red : Theme.border))
+                .focused($isFocused)
+                .onSubmit(commit)
+            if rejected {
+                Text("That name is empty or already used.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.red)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .buttonStyle(ObsidianButtonStyle())
+                Button(action, action: commit)
+                    .buttonStyle(ObsidianButtonStyle(prominent: true))
+            }
+        }
+        .padding(14)
+        .frame(width: 260)
+        .background(Theme.bgSecondary)
+        .environment(\.colorScheme, .dark)
+        .onAppear {
+            name = initial
+            isFocused = true
+        }
+    }
+
+    private func commit() {
+        if name == initial || onCommit(name) {
+            dismiss()
+        } else {
+            rejected = true
+        }
     }
 }
 

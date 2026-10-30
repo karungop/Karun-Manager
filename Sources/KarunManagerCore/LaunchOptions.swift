@@ -13,6 +13,8 @@ public struct LaunchOptions: Equatable, Sendable {
     public var demo = false
     /// Debug builds: render the window and HUDs to PNGs in this directory, then quit.
     public var snapshotDirectory: String?
+    /// Log every idle check (time, idle seconds, decision) to stderr, to diagnose missed nudges.
+    public var logNudges = false
 
     public var usesMockMonitor: Bool { simulateWake || simulateIdle || simulateFocus }
 
@@ -22,6 +24,7 @@ public struct LaunchOptions: Equatable, Sendable {
         simulateFocus = flags.contains("--simulate-focus")
         simulateIdle = flags.contains("--simulate-idle") || simulateFocus
         demo = flags.contains("--demo")
+        logNudges = flags.contains("--log-nudges")
         if let index = arguments.firstIndex(of: "--snapshot"), arguments.indices.contains(index + 1) {
             snapshotDirectory = arguments[index + 1]
         }

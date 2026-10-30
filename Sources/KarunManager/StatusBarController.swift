@@ -28,6 +28,13 @@ final class StatusBarController: NSObject {
         item.button?.image = image
     }
 
+    /// Shows the current Quick Capture shortcut next to the menu item.
+    func setQuickCaptureShortcut(_ hotkey: QuickCaptureHotkey) {
+        quickCaptureItem?.title = hotkey == .off ? "Quick Capture" : "Quick Capture  \(hotkey.title)"
+    }
+
+    private var quickCaptureItem: NSMenuItem?
+
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
         let open = NSMenuItem(title: "Open Karun Manager", action: #selector(openWindow), keyEquivalent: "")
@@ -35,10 +42,10 @@ final class StatusBarController: NSObject {
         menu.addItem(open)
         menu.addItem(.separator())
 
-        let capture = NSMenuItem(title: "Quick Capture", action: #selector(quickCapture), keyEquivalent: " ")
-        capture.keyEquivalentModifierMask = .option
+        let capture = NSMenuItem(title: "Quick Capture", action: #selector(quickCapture), keyEquivalent: "")
         capture.target = self
         menu.addItem(capture)
+        quickCaptureItem = capture
 
         let next = NSMenuItem(title: "Show Next Task", action: #selector(showNextTask), keyEquivalent: "")
         next.target = self
