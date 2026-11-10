@@ -20,7 +20,26 @@ cp Resources/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 # (Free: sign in to Xcode with an Apple ID to get an "Apple Development" certificate.)
 identity="$(security find-identity -v -p codesigning 2>/dev/null \
   | awk -F'"' '/Apple Development|Developer ID Application/ { print $2; exit }')"
-codesign --force --sign "${identity:--}" "$app" >/dev/null
+# iCloud sync needs a provisioning profile that grants the iCloud entitlements (README → iCloud sync).
+# Without one the app is signed without them and keeps tasks on this Mac only.
+entitlements=()
+if [ -n "${KARUNMANAGER_PROFILE:-}" ]; then
+  [ -n "$identity" ] || { echo "KARUNMANAGER_PROFILE needs an Apple Development or Developer ID certificate" >&2; exit 1; }
+  profile_plist="$(mktemp)"
+  security cms -D -i "$KARUNMANAGER_PROFILE" > "$profile_plist"
+  team_id="$(plutil -extract TeamIdentifier.0 raw "$profile_plist")"
+  aps="$(plutil -extract Entitlements.com\\.apple\\.developer\\.aps-environment raw "$profile_plist" 2>/dev/null || echo development)"
+  rm -f "$profile_plist"
+  cp "$KARUNMANAGER_PROFILE" "$app/Contents/embedded.provisionprofile"
+  sed -e "s/TEAM_ID/$team_id/g" -e "s/APS_ENVIRONMENT/$aps/g" Resources/KarunManager.entitlements > "build/KarunManager.entitlements"
+  entitlements=(--entitlements build/KarunManager.entitlements --options runtime)
+fi
+codesign --force --sign "${identity:--}" ${entitlements[@]+"${entitlements[@]}"} "$app" >/dev/null
 echo "Signed with: ${identity:-ad-hoc (no developer certificate; notifications fall back to in-app banners)}"
+if [ -n "${KARUNMANAGER_PROFILE:-}" ]; then
+  echo "iCloud sync: on (team $team_id, push environment $aps)"
+else
+  echo "iCloud sync: off (set KARUNMANAGER_PROFILE to a provisioning profile to enable it)"
+fi
 
 echo "Built $app"

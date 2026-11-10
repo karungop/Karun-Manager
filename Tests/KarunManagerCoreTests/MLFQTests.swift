@@ -298,6 +298,36 @@ struct MLFQTests {
         #expect(try store.pendingTasks().map(\.id) == [open.id])
     }
 
+    @Test func clearingCompletedCanBeLimitedToSomeTasks() throws {
+        let store = try makeStore()
+        let shown = try store.add(title: "shown")
+        let hidden = try store.add(title: "hidden")
+        try store.complete(shown)
+        try store.complete(hidden)
+        let removed = try store.deleteCompleted(only: [shown.id])
+        #expect(removed.map(\.title) == ["shown"])
+        #expect(try store.allTasks().map(\.title) == ["hidden"])
+    }
+
+    /// A drop onto a row in another category re-categorises and reorders; one snapshot restore undoes both.
+    @Test func recategorisingReorderRollsBackAsOneStep() throws {
+        var clock = Date(timeIntervalSince1970: 0)
+        let store = try makeStore(now: { clock })
+        let target = try store.add(title: "target", categoryName: TaskCategory.thingsToDo, queueLevel: .high)
+        clock += 10
+        let dragged = try store.add(title: "dragged", categoryName: TaskCategory.thingsToBuy, queueLevel: .high)
+        let before = dragged.snapshot
+
+        try store.setCategory(dragged, to: target.categoryName)
+        try store.move(dragged, before: target)
+        #expect(try store.pendingTasks().map(\.title) == ["dragged", "target"])
+        #expect(dragged.categoryName == TaskCategory.thingsToDo)
+
+        try store.restore(dragged, to: before)
+        #expect(try store.pendingTasks().map(\.title) == ["target", "dragged"])
+        #expect(dragged.categoryName == TaskCategory.thingsToBuy)
+    }
+
     // MARK: Really-bad fixes
 
     @Test func reopeningARepeatingTaskRemovesItsScheduledCopy() throws {

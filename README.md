@@ -22,6 +22,28 @@ open build/KarunManager.app     # starts in the menu bar; run `open` again (or c
   Accounts) to get a free "Apple Development" certificate; `scripts/bundle.sh` uses it automatically and prints
   which signature it used.
 
+### iCloud sync
+
+Tasks (SwiftData mirrored to your private CloudKit database) and preferences (categories, skip rules, nudge timing,
+via iCloud key-value storage) sync between Macs signed in to the same Apple ID. The Quick Capture shortcut and Open at
+login stay per-Mac. Settings → iCloud shows whether sync is on.
+
+Sync needs a **paid Apple Developer account**, because iCloud entitlements only work with a provisioning profile:
+
+1. In [Certificates, Identifiers & Profiles](https://developer.apple.com/account/resources), register the App ID
+   `com.karungopal.KarunManager` with the **iCloud** (CloudKit) and **Push Notifications** capabilities, and create
+   the container `iCloud.com.karungopal.KarunManager`.
+2. Register your Mac, then create a **macOS App Development** profile for that App ID and download it.
+3. Build with it: `KARUNMANAGER_PROFILE=~/Downloads/KarunManager.provisionprofile scripts/bundle.sh`
+
+Without `KARUNMANAGER_PROFILE` the app is signed without the entitlements and keeps everything on this Mac (signing
+with them but no profile would stop macOS from launching it). Your existing tasks upload on the first synced launch.
+Development builds use CloudKit's development environment, which creates the schema automatically; before shipping a
+Developer ID build, deploy the schema to production in the CloudKit Console.
+
+When two Macs edit while offline, iCloud keeps the last write per task. Afterwards the app merges duplicates: one
+copy per task `id` and one unfinished copy per repeating series.
+
 ### Launch flags
 
 | Flag               | Effect                                                                                 |
@@ -43,7 +65,7 @@ open build/KarunManager.app     # starts in the menu bar; run `open` again (or c
   *passive*: they float on top but don't take the keyboard. Click one, or press the Quick Capture shortcut, to use it.
   No HUDs while the main window is in front; in focus apps (Settings → Focus apps) you get a badge + notification instead.
 - **Tasks** have a title, category, queue, optional notes, due date, repeat rule and snooze. Every task has a hidden
-  unique `id`; copies of a repeating task also share a hidden `seriesID`, and a series never has more than one
+  `id` (unique in practice; CloudKit forbids enforcing it, so sync repair merges duplicates); copies of a repeating task also share a hidden `seriesID`, and a series never has more than one
   unfinished copy. Completing a repeat schedules the next copy on the **Upcoming** page, where it waits (it can't be
   checked off) until its day, unless you choose *Make available now*. Changes in the window can be undone (⌘Z).
 

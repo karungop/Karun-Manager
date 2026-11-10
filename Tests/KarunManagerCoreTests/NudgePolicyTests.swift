@@ -29,6 +29,18 @@ struct NudgePolicyTests {
         #expect(idle(lastNudgeAgo: nil, idleTime: 120) == .showNudge)
     }
 
+    @Test func watchingAVideoHoldsEveryNudge() {
+        let watching = { (trigger: NudgeTrigger, frontmost: String) in
+            policy.evaluate(trigger, now: now, lastNudgeAt: nil, idleTime: 3_600,
+                            frontmostBundleID: frontmost, hasPendingTask: true, isWatchingMedia: true)
+        }
+        #expect(watching(.idleTick, "com.apple.TV") == .none)
+        #expect(watching(.wake, "com.apple.TV") == .none)
+        // Not even the quiet badge + banner a focus app would get.
+        #expect(watching(.idleTick, "com.apple.Terminal") == .none)
+        #expect(idle(idleTime: 3_600) == .showNudge)
+    }
+
     @Test func idleNudgeNeedsATask() {
         #expect(idle(hasPendingTask: false) == .none)
     }

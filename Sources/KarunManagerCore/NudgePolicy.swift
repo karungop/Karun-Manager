@@ -43,8 +43,12 @@ public struct NudgePolicy: Sendable {
         lastNudgeAt: Date?,
         idleTime: TimeInterval,
         frontmostBundleID: String?,
-        hasPendingTask: Bool
+        hasPendingTask: Bool,
+        isWatchingMedia: Bool = false
     ) -> NudgeDecision {
+        // Watching a show looks exactly like being idle (no input for minutes), but it's the worst
+        // moment for a HUD — or a banner — over the picture. Hold everything until it's over.
+        if isWatchingMedia { return .none }
         switch trigger {
         case .wake:
             // Waking is a natural checkpoint: surface the top task, or invite capture if the queue is empty.

@@ -65,7 +65,11 @@ struct SidebarView: View {
                                     set: { if !$0 { renamingCategory = nil } }
                                 ), arrowEdge: .trailing) {
                                     CategoryNamePopover(title: "Rename category", initial: name, action: "Rename") { new in
-                                        model.renameCategory(name, to: new)
+                                        guard model.renameCategory(name, to: new) else { return false }
+                                        // The row (and this popover) go away with the old name; don't leave
+                                        // state behind that would reopen it for a future category of that name.
+                                        renamingCategory = nil
+                                        return true
                                     }
                                 }
                         }
@@ -234,7 +238,8 @@ private struct CategoryNamePopover: View {
     }
 
     private func commit() {
-        if name == initial || onCommit(name) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == initial || onCommit(trimmed) {
             dismiss()
         } else {
             rejected = true

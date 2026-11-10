@@ -15,12 +15,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var library: LibraryModel!
     private var mainWindow: MainWindowController!
     private let notifications = NotificationManager()
+    private var cloudSync: CloudSync!
+    private var syncedPreferences: SyncedPreferences?
 
     init(options: LaunchOptions) {
         self.options = options
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        cloudSync = CloudSync(inMemory: options.inMemory)
+        NSLog("KarunManager: iCloud sync \(cloudSync.status)")
         store = TaskStore(container: openContainer(), defaults: makeDefaults())
         if options.demo {
             do { try store.seedDemoData() } catch { NSLog("KarunManager: demo seed failed: \(error)") }
@@ -34,6 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         library = LibraryModel(store: store, settings: settings)
+        library.syncStatus = cloudSync.status
+        startSync()
         mainWindow = MainWindowController(model: library)
         settingsWindow = SettingsWindowController(model: library)
         library.onOpenSettings = { [weak self] in self?.settingsWindow.show() }
@@ -103,7 +109,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Switching to the app (e.g. Cmd+Tab) clears any HUD; the window is the place to act then.
     func applicationDidBecomeActive(_ notification: Notification) {
-        if mainWindow.isFrontmost { hud.dismiss() }
+        // Optional chaining: the damaged-store alert can activate the app before launch finishes.
+        if mainWindow?.isFrontmost == true { hud.dismiss() }
     }
 
     private func openWindow() {
@@ -115,27 +122,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// aside and start fresh instead of crashing at launch.
     private func openContainer() -> ModelContainer {
         do {
-            return try TaskStore.makeContainer(inMemory: options.inMemory)
+            return try TaskStore.makeContainer(inMemory: options.inMemory, cloudKitContainer: cloudSync.containerIdentifier)
         } catch {
             NSLog("KarunManager: failed to open task store: \(error)")
             let alert = NSAlert()
             alert.alertStyle = .critical
             alert.messageText = "Karun Manager couldn't open your tasks"
-            alert.informativeText = "The task database couldn't be read (\(error.localizedDescription)).\n\n"
+            alert.informativeText = "The task database file couldn't be read. It may be damaged, or it was "
+                + "saved by a newer version of the app.\n\n"
                 + "“Start fresh” renames the old files with “-damaged” and the date (nothing is deleted), "
                 + "then opens an empty task list."
             alert.addButton(withTitle: "Start fresh")
             alert.addButton(withTitle: "Quit")
-            NSApp.activate()
-            guard alert.runModal() == .alertFirstButtonReturn else { exit(1) }
+            guard runFrontmost(alert) == .alertFirstButtonReturn else { exit(1) }
             TaskStore.moveStoreAside()
             do {
-                return try TaskStore.makeContainer()
+                return try TaskStore.makeContainer(cloudKitContainer: cloudSync.containerIdentifier)
             } catch {
                 NSLog("KarunManager: fresh store failed too, keeping tasks in memory: \(error)")
+                let warning = NSAlert()
+                warning.alertStyle = .warning
+                warning.messageText = "Changes won't be saved this session"
+                warning.informativeText = "A new task database couldn't be created either (\(error.localizedDescription)). "
+                    + "Karun Manager will run, but tasks you add disappear when it quits."
+                warning.addButton(withTitle: "Continue")
+                warning.addButton(withTitle: "Quit")
+                guard runFrontmost(warning) == .alertFirstButtonReturn else { exit(1) }
                 return try! TaskStore.makeContainer(inMemory: true)
             }
         }
+    }
+
+    /// A menu-bar-only app's alert can open behind other windows, and macOS 14 may decline a plain
+    /// activate(). Becoming a regular app for the alert's lifetime brings it to the front.
+    private func runFrontmost(_ alert: NSAlert) -> NSApplication.ModalResponse {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate()
+        alert.window.level = .floating
+        defer { NSApp.setActivationPolicy(.accessory) }
+        return alert.runModal()
+    }
+
+    /// Tasks sync through SwiftData's CloudKit mirroring; preferences through iCloud key-value storage.
+    /// Either kind of remote change refreshes the window, settings and reminders.
+    private func startSync() {
+        guard cloudSync.containerIdentifier != nil else { return }
+        // Tasks that arrived while the app was closed may already have produced duplicates.
+        library.refreshAfterRemoteChange()
+        cloudSync.observeRemoteChanges { [weak self] in self?.library.refreshAfterRemoteChange() }
+
+        let preferences = SyncedPreferences(
+            defaults: .standard,
+            domain: Bundle.main.bundleIdentifier ?? ProcessInfo.processInfo.processName
+        )
+        preferences.onRemoteChange = { [weak self] in
+            self?.settings.reload()
+            self?.library.refreshAfterRemoteChange()
+        }
+        preferences.start()
+        settings.reload()
+        syncedPreferences = preferences
     }
 
     /// Keeps services that copy a setting in sync when it changes.
@@ -166,7 +212,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard options.usesMockMonitor else { return LiveSystemEventMonitor() }
         let mock = MockSystemEventMonitor(
             systemIdleTime: options.simulateIdle ? 3600 : 0,
-            frontmostBundleIdentifier: options.simulateFocus ? "com.apple.Terminal" : nil
+            frontmostBundleIdentifier: options.simulateFocus ? "com.apple.Terminal" : nil,
+            watchingMediaReason: options.simulateVideo ? "simulated video" : nil
         )
         if options.simulateWake {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
@@ -193,18 +240,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let watching = settings.quietDuringVideo ? monitor.watchingMediaReason : nil
         let decision = settings.nudgePolicy.evaluate(
             trigger,
             now: Date(),
             lastNudgeAt: library.lastNudgeAt,
             idleTime: monitor.systemIdleTime,
             frontmostBundleID: monitor.frontmostBundleIdentifier,
-            hasPendingTask: (try? store.nextTask()) != nil
+            hasPendingTask: (try? store.nextTask()) != nil,
+            isWatchingMedia: watching != nil
         )
 
         if options.logNudges {
             let since = library.lastNudgeAt.map { "\(Int(Date().timeIntervalSince($0)))s" } ?? "never"
-            NSLog("KarunManager nudge check: trigger=\(trigger) idle=\(Int(monitor.systemIdleTime))s sinceLastNudge=\(since) frontmost=\(monitor.frontmostBundleIdentifier ?? "?") hasTask=\((try? store.nextTask()) != nil) decision=\(decision)")
+            NSLog("KarunManager nudge check: trigger=\(trigger) idle=\(Int(monitor.systemIdleTime))s sinceLastNudge=\(since) frontmost=\(monitor.frontmostBundleIdentifier ?? "?") hasTask=\((try? store.nextTask()) != nil) watching=\(watching ?? "no") decision=\(decision)")
         }
         switch decision {
         case .none: break

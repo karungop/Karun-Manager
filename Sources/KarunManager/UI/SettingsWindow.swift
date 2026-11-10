@@ -53,6 +53,7 @@ struct SettingsView: View {
                 nudges
                 FocusAppsSection(settings: settings)
                 notifications
+                iCloud
             }
             .padding(.horizontal, 28)
             .padding(.bottom, 28)
@@ -91,6 +92,56 @@ struct SettingsView: View {
                 .tint(Theme.accent)
                 .labelsHidden()
             }
+            if let error = settings.launchAtLoginError {
+                Label("macOS didn't allow that: \(error)", systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Theme.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var iCloud: some View {
+        SettingsSection("iCloud") {
+            SettingsRow("Sync", detail: syncDetail) {
+                Label(syncTitle, systemImage: syncSymbol)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(syncIsOn ? Theme.accent : Theme.textMuted)
+            }
+        }
+    }
+
+    private var syncIsOn: Bool {
+        if case .on = model.syncStatus { true } else { false }
+    }
+
+    private var syncTitle: String {
+        switch model.syncStatus {
+        case .on: "On"
+        case .noAccount: "Waiting for iCloud"
+        case .notEntitled, .disabledForSession: "Off"
+        }
+    }
+
+    private var syncSymbol: String {
+        switch model.syncStatus {
+        case .on: "checkmark.icloud"
+        case .noAccount: "exclamationmark.icloud"
+        case .notEntitled, .disabledForSession: "icloud.slash"
+        }
+    }
+
+    private var syncDetail: String {
+        switch model.syncStatus {
+        case .on:
+            "Tasks, categories and nudge settings sync to your other Macs signed in to the same Apple ID. "
+                + "The Quick Capture shortcut and Open at login stay per-Mac."
+        case .noAccount:
+            "Sign in to iCloud in System Settings to sync. Your tasks are saved on this Mac until then."
+        case .notEntitled:
+            "This build isn't signed for iCloud, so tasks stay on this Mac. See “iCloud sync” in the README to enable it."
+        case .disabledForSession:
+            "Off for --demo / --in-memory runs."
         }
     }
 
@@ -113,6 +164,15 @@ struct SettingsView: View {
             }
             SettingsRow("Idle time before a nudge", detail: "No keyboard or mouse input for this long.") {
                 StepperValue(value: $settings.idleThresholdMinutes, range: 1...30, step: 1, unit: "min")
+            }
+            SettingsRow(
+                "Quiet while watching",
+                detail: "No nudges while a video plays or the front app is full screen. They resume once it's over."
+            ) {
+                Toggle("", isOn: $settings.quietDuringVideo)
+                    .toggleStyle(.switch)
+                    .tint(Theme.accent)
+                    .labelsHidden()
             }
             SettingsRow("Skips before a task moves down", detail: "Only for categories set to Demote; Stay categories never change queue.") {
                 StepperValue(

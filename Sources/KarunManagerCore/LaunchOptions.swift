@@ -7,6 +7,8 @@ public struct LaunchOptions: Equatable, Sendable {
     public var simulateIdle = false
     /// Like `simulateIdle`, but with a Distraction Guard app (Terminal) frontmost: badge + notification, no HUD.
     public var simulateFocus = false
+    /// Like `simulateIdle`, but pretending a video is playing: no nudge should appear.
+    public var simulateVideo = false
     /// Use a throwaway in-memory store (handy alongside the simulate flags).
     public var inMemory = false
     /// In-memory store pre-filled with sample tasks, for UI work and screenshots.
@@ -16,13 +18,14 @@ public struct LaunchOptions: Equatable, Sendable {
     /// Log every idle check (time, idle seconds, decision) to stderr, to diagnose missed nudges.
     public var logNudges = false
 
-    public var usesMockMonitor: Bool { simulateWake || simulateIdle || simulateFocus }
+    public var usesMockMonitor: Bool { simulateWake || simulateIdle || simulateFocus || simulateVideo }
 
     public init(arguments: [String]) {
         let flags = Set(arguments.dropFirst())
         simulateWake = flags.contains("--simulate-wake")
         simulateFocus = flags.contains("--simulate-focus")
-        simulateIdle = flags.contains("--simulate-idle") || simulateFocus
+        simulateVideo = flags.contains("--simulate-video")
+        simulateIdle = flags.contains("--simulate-idle") || simulateFocus || simulateVideo
         demo = flags.contains("--demo")
         logNudges = flags.contains("--log-nudges")
         if let index = arguments.firstIndex(of: "--snapshot"), arguments.indices.contains(index + 1) {
