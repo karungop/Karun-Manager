@@ -1,13 +1,10 @@
 // Renders Resources/AppIcon.icns: an Obsidian-purple squircle with a check and three queue bars.
 // Usage: swift scripts/make-icon.swift <output-dir>   (bundle.sh runs this when the icon is missing)
+//        swift scripts/make-icon.swift --ios <file.png>   (1024px full-bleed iPhone icon; iOS rounds the corners)
 import AppKit
 
-let outputDir = URL(filePath: CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "Resources")
-let iconset = FileManager.default.temporaryDirectory.appending(path: "AppIcon.iconset")
-try? FileManager.default.removeItem(at: iconset)
-try FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
-
-func render(_ pixels: Int) -> Data {
+/// `fullBleed`: fill the whole square with no shadow or transparency, as iOS app icons require.
+func render(_ pixels: Int, fullBleed: Bool = false) -> Data {
     let size = CGFloat(pixels)
     let rep = NSBitmapImageRep(
         bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels, bitsPerSample: 8, samplesPerPixel: 4,
@@ -15,9 +12,10 @@ func render(_ pixels: Int) -> Data {
     )!
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
-    let inset = size * 0.1
+    let inset = fullBleed ? 0 : size * 0.1
     let tile = NSRect(x: inset, y: inset, width: size - inset * 2, height: size - inset * 2)
-    let squircle = NSBezierPath(roundedRect: tile, xRadius: tile.width * 0.225, yRadius: tile.width * 0.225)
+    let radius = fullBleed ? 0 : tile.width * 0.225
+    let squircle = NSBezierPath(roundedRect: tile, xRadius: radius, yRadius: radius)
 
     // Shadow + gradient body.
     NSGraphicsContext.current?.saveGraphicsState()
@@ -65,6 +63,25 @@ func render(_ pixels: Int) -> Data {
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!
 }
+
+if CommandLine.arguments.count > 2, CommandLine.arguments[1] == "--ios" {
+    let output = URL(filePath: CommandLine.arguments[2])
+    // Redraw into an alpha-less context: the App Store rejects iOS icons with an alpha channel.
+    let source = NSBitmapImageRep(data: render(1024, fullBleed: true))!.cgImage!
+    let opaque = CGContext(
+        data: nil, width: 1024, height: 1024, bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+    )!
+    opaque.draw(source, in: CGRect(x: 0, y: 0, width: 1024, height: 1024))
+    try NSBitmapImageRep(cgImage: opaque.makeImage()!).representation(using: .png, properties: [:])!.write(to: output)
+    print("Wrote \(output.path)")
+    exit(0)
+}
+
+let outputDir = URL(filePath: CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "Resources")
+let iconset = FileManager.default.temporaryDirectory.appending(path: "AppIcon.iconset")
+try? FileManager.default.removeItem(at: iconset)
+try FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
 
 for base in [16, 32, 128, 256, 512] {
     try render(base).write(to: iconset.appending(path: "icon_\(base)x\(base).png"))

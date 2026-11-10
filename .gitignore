@@ -3,3 +3,7 @@
 .swiftpm/
 build/
 .context/
+
+# iPhone app: per-developer signing (see iOS/Config/Local.xcconfig.example)
+iOS/Config/Local.xcconfig
+xcuserdata/

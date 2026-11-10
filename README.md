@@ -44,6 +44,28 @@ Developer ID build, deploy the schema to production in the CloudKit Console.
 When two Macs edit while offline, iCloud keeps the last write per task. Afterwards the app merges duplicates: one
 copy per task `id` and one unfinished copy per repeating series.
 
+### iPhone app
+
+A small companion in `iOS/` (iOS 17+). It shows your open tasks by queue and lets you **add** (with the same `buy:` /
+`call:` / `work:` prefixes), **complete** (tap the circle or swipe right) and **delete** (swipe left) them, with a few
+seconds to undo. Everything else stays on the Mac: categories, skip rules, nudges, repeats, due dates, snooze and
+settings. The phone shows them but can't change them. Scheduled repeats stay hidden until their day, as on the Mac.
+
+It uses the same `KarunManagerCore` library, the same bundle ID and the same iCloud container, so with sync on both
+apps share one task list.
+
+```sh
+open iOS/KarunManagerMobile.xcodeproj           # then pick an iPhone simulator and Run
+xcodebuild -project iOS/KarunManagerMobile.xcodeproj -scheme KarunManagerMobile \
+  -destination 'platform=iOS Simulator,name=iPhone 17' test   # UI tests: add, complete, delete, undo
+```
+
+To run it on your iPhone, copy `iOS/Config/Local.xcconfig.example` to `iOS/Config/Local.xcconfig` (gitignored) and set
+your `DEVELOPMENT_TEAM`. Keep its two iCloud lines to sync with the Mac. This needs the paid account and App ID from
+*iCloud sync* above, with the iPhone registered too. Delete those two lines to keep tasks on the phone only (a free
+account works for that). The cloud icon in the top right shows which mode you're in. Add `--demo` in the scheme's
+Run arguments for sample tasks.
+
 ### Launch flags
 
 | Flag               | Effect                                                                                 |

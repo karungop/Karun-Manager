@@ -1,0 +1,13 @@
+// Shared settings for the iPhone app. Signing and iCloud are opt-in through Local.xcconfig (gitignored);
+// copy Local.xcconfig.example to Local.xcconfig and fill in your team. Without it the app builds for the
+// simulator and keeps tasks on the device only.
+
+// Same bundle ID (and so the same App ID, iCloud container and key-value store) as the Mac app.
+PRODUCT_BUNDLE_IDENTIFIER = com.karungopal.KarunManager
+CODE_SIGN_STYLE = Automatic
+
+// Empty = local only. Local.xcconfig sets this together with CODE_SIGN_ENTITLEMENTS; the app reads it
+// from Info.plist (KMCloudKitContainer) to decide whether to mirror the store to iCloud.
+KM_CLOUDKIT_CONTAINER =
+
+#include? "Local.xcconfig"

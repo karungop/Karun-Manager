@@ -1,6 +1,9 @@
+import Foundation
+#if os(macOS)
 import AppKit
 import CoreGraphics
 import IOKit.pwr_mgt
+#endif
 
 /// Wraps the macOS system queries the scheduler depends on so they can be mocked (spec §4B).
 @MainActor
@@ -15,6 +18,8 @@ public protocol SystemEventMonitoring: AnyObject {
     func stopObservingWake()
 }
 
+#if os(macOS)
+/// The real monitor (macOS only: idle time, frontmost app and wake come from AppKit/IOKit).
 @MainActor
 public final class LiveSystemEventMonitor: SystemEventMonitoring {
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
@@ -104,6 +109,8 @@ public final class LiveSystemEventMonitor: SystemEventMonitoring {
         observers.removeAll()
     }
 }
+
+#endif
 
 /// Test/CLI double: set idle time and frontmost app directly, fire wake on demand.
 @MainActor

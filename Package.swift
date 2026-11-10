@@ -3,9 +3,11 @@ import PackageDescription
 
 let package = Package(
     name: "KarunManager",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
         .executable(name: "KarunManager", targets: ["KarunManager"]),
+        // Shared with the iPhone app (iOS/KarunManagerMobile.xcodeproj).
+        .library(name: "KarunManagerCore", targets: ["KarunManagerCore"]),
     ],
     targets: [
         // Pure domain logic: model, MLFQ engine, nudge policy, system-event abstraction.
