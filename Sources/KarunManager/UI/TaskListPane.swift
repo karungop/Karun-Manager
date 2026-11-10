@@ -203,10 +203,10 @@ struct TaskListPane: View {
         guard !target.isCompleted, target.isAvailable(at: index.now),
               let dragged = dragIDs.compactMap({ model.task(withDragID: $0, in: tasks) }).first,
               !dragged.isCompleted else { return false }
-        if case .queue = model.selection, dragged.categoryName != target.categoryName {
-            model.setCategory(dragged, to: target.categoryName)
-        }
-        model.move(dragged, before: target)
+        // On a queue page the subheadings are categories, so landing in another one re-categorises too.
+        var adoptsCategory = false
+        if case .queue = model.selection { adoptsCategory = true }
+        model.move(dragged, before: target, adoptingCategory: adoptsCategory)
         return true
     }
 
@@ -223,9 +223,13 @@ struct TaskListPane: View {
                     .foregroundStyle(Theme.textFaint)
                 if model.selection == .completed && !sections.isEmpty {
                     Spacer()
-                    Button("Clear completed") { model.clearCompleted() }
-                        .buttonStyle(ObsidianButtonStyle())
-                        .help("Removes every completed task (you can undo)")
+                    // While searching, only the matches on screen are cleared.
+                    let searching = !model.searchText.isEmpty
+                    Button(searching ? "Clear these" : "Clear completed") {
+                        model.clearCompleted(only: searching ? Set(sections.flatMap(\.tasks).map(\.id)) : nil)
+                    }
+                    .buttonStyle(ObsidianButtonStyle())
+                    .help(searching ? "Removes the completed tasks shown (you can undo)" : "Removes every completed task (you can undo)")
                 }
             }
             if case .category(let name) = model.selection {
@@ -457,7 +461,10 @@ private struct DueLabel: View {
 
     static func text(for due: Date, now: Date, overdue: Bool) -> String {
         let calendar = Calendar.current
-        let day = due.formatted(.dateTime.month(.abbreviated).day())
+        // Only spell out the year when it isn't this one ("Due Oct 31, 2027").
+        let day = calendar.isDate(due, equalTo: now, toGranularity: .year)
+            ? due.formatted(.dateTime.month(.abbreviated).day())
+            : due.formatted(.dateTime.month(.abbreviated).day().year())
         if overdue { return "Overdue · \(day)" }
         if calendar.isDate(due, inSameDayAs: now) { return "Due today" }
         if let tomorrow = calendar.date(byAdding: .day, value: 1, to: now), calendar.isDate(due, inSameDayAs: tomorrow) {
@@ -487,9 +494,13 @@ private struct SnoozeLabel: View {
     }
 }
 
-/// "Deleted “X” · Undo ⌘Z", fading out after a few seconds.
+/// "Deleted “X” · Undo ⌘Z", fading out a few seconds after the change. Hovering keeps it up.
 private struct UndoBannerView: View {
     @Bindable var model: LibraryModel
+
+    private static let lifetime: Duration = .seconds(6)
+    @State private var hovering = false
+    @State private var hoverEndedAt: Date?
 
     var body: some View {
         if let banner = model.undoBanner {
@@ -509,14 +520,28 @@ private struct UndoBannerView: View {
             .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Theme.border))
             .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
             .transition(.move(edge: .bottom).combined(with: .opacity))
-            .task(id: banner.id) {
-                try? await Task.sleep(for: .seconds(6))
+            .onHover { inside in
+                hovering = inside
+                if !inside { hoverEndedAt = Date() }
+            }
+            // Restarts when the pointer leaves, giving a fresh full lifetime from then.
+            .task(id: TimerKey(banner: banner.id, hovering: hovering)) {
+                guard !hovering else { return }
+                let start = max(banner.createdAt, hoverEndedAt ?? .distantPast)
+                let elapsed = Duration.seconds(Date().timeIntervalSince(start))
+                let remaining = elapsed < Self.lifetime ? Self.lifetime - elapsed : .zero
+                do { try await Task.sleep(for: remaining) } catch { return }
                 if model.undoBanner?.id == banner.id {
                     withAnimation { model.undoBanner = nil }
                 }
             }
         }
     }
+}
+
+private struct TimerKey: Hashable {
+    let banner: UUID
+    let hovering: Bool
 }
 
 /// An Obsidian-style H3 with a fold chevron, like folding a heading in a note.

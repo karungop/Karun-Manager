@@ -182,18 +182,21 @@ private struct TitleEditor: View {
             }
             .onChange(of: isFocused) { if !isFocused { commit() } }
             .onChange(of: model.titleEditRequest) { isFocused = true }
+            // Selecting another task replaces this view before focus-loss fires, so save on the way out.
+            .onDisappear(perform: commit)
             .help("Click to rename (or press Return on a selected task)")
     }
 
     private func commit() {
-        guard draft != task.title else { return }
+        guard model.contains(task), draft != task.title else { return }
         model.setTitle(task, to: draft)
         draft = task.title  // blank input is rejected; show the real title again
         isFocused = false
     }
 }
 
-/// Obsidian-style note body under the properties. Saves when focus leaves.
+/// Obsidian-style note body under the properties. Return starts a new line. Saves shortly after
+/// typing stops, when focus leaves, and when the editor goes away (selecting another task).
 private struct NotesEditor: View {
     @Bindable var model: LibraryModel
     let task: TaskItem
@@ -204,18 +207,39 @@ private struct NotesEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             SectionTitle("Notes")
-            TextField("", text: $draft, prompt: Text("Add notes…").foregroundStyle(Theme.textFaint), axis: .vertical)
-                .textFieldStyle(.plain)
+            TextEditor(text: $draft)
+                .scrollContentBackground(.hidden)
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.textNormal)
-                .lineLimit(3...12)
                 .focused($isFocused)
+                .frame(minHeight: 64, maxHeight: 220)
+                .fixedSize(horizontal: false, vertical: true)
+                .overlay(alignment: .topLeading) {
+                    if draft.isEmpty {
+                        Text("Add notes…")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.textFaint)
+                            .padding(.leading, 5)
+                            .allowsHitTesting(false)
+                    }
+                }
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Theme.bgPrimary))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(isFocused ? Theme.accent.opacity(0.6) : Theme.border))
                 .onAppear { draft = task.notes ?? "" }
-                .onChange(of: isFocused) { if !isFocused { model.setNotes(task, to: draft) } }
+                // An undo (or another window) changed the notes while we weren't editing.
+                .onChange(of: task.notes) { if !isFocused { draft = task.notes ?? "" } }
+                .onChange(of: isFocused) { if !isFocused { save() } }
+                .task(id: draft) {
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                    save()
+                }
+                .onDisappear(perform: save)
         }
+    }
+
+    private func save() {
+        model.setNotes(task, to: draft)
     }
 }
 

@@ -109,16 +109,27 @@ public final class TaskStore {
         try context.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.categoryName == name }))
     }
 
-    public static let storeDirectory = URL.applicationSupportDirectory
-        .appending(path: "KarunManager", directoryHint: .isDirectory)
+    /// `KARUNMANAGER_STORE_DIR` points a test run at another folder (e.g. to try the damaged-store prompt).
+    public static let storeDirectory = ProcessInfo.processInfo.environment["KARUNMANAGER_STORE_DIR"]
+        .map { URL(filePath: $0, directoryHint: .isDirectory) }
+        ?? URL.applicationSupportDirectory.appending(path: "KarunManager", directoryHint: .isDirectory)
 
-    public static func makeContainer(inMemory: Bool = false) throws -> ModelContainer {
+    /// Opens the task database. With `cloudKitContainer` (an `iCloud.…` identifier the app is entitled to),
+    /// the same local file is also mirrored to the user's private iCloud database; existing tasks upload on
+    /// first launch. Without it the store is local only. In-memory stores never sync.
+    public static func makeContainer(inMemory: Bool = false, cloudKitContainer: String? = nil) throws -> ModelContainer {
         let schema = Schema([TaskItem.self])
         if inMemory {
-            return try ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+            return try ModelContainer(
+                for: schema,
+                configurations: ModelConfiguration(isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+            )
         }
         try FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
-        let config = ModelConfiguration(url: storeDirectory.appending(path: "Tasks.store"))
+        let config = ModelConfiguration(
+            url: storeDirectory.appending(path: "Tasks.store"),
+            cloudKitDatabase: cloudKitContainer.map { .private($0) } ?? .none
+        )
         return try ModelContainer(for: schema, configurations: config)
     }
 
@@ -126,7 +137,9 @@ public final class TaskStore {
     /// can be created without deleting anything.
     public static func moveStoreAside() {
         let fileManager = FileManager.default
-        let stamp = Date().formatted(.iso8601.year().month().day().time(includingFractionalSeconds: false))
+        let stamp = Date().formatted(
+            Date.ISO8601FormatStyle(timeZone: .current).year().month().day().time(includingFractionalSeconds: false)
+        )
             .replacingOccurrences(of: ":", with: "-")
         let names = (try? fileManager.contentsOfDirectory(atPath: storeDirectory.path)) ?? []
         for name in names where name.hasPrefix("Tasks.store") {
@@ -317,15 +330,34 @@ public final class TaskStore {
         return removed
     }
 
+    /// Cleans up after iCloud merges changes from another device. Two devices can each create a copy of the
+    /// same task (undoing a delete on both, say), and two devices completing the same repeat while offline
+    /// each schedule a next occurrence. Keeps one task per `id` (the most recently touched) and then one
+    /// unfinished copy per series. Returns how many tasks were removed.
+    @discardableResult
+    public func repairSyncConflicts() throws -> Int {
+        var removed = 0
+        for (_, copies) in Dictionary(grouping: try allTasks(), by: \.id) where copies.count > 1 {
+            let keep = copies.max { $0.lastTouched < $1.lastTouched }
+            for copy in copies where copy !== keep {
+                context.delete(copy)
+                removed += 1
+            }
+        }
+        if context.hasChanges { try context.save() }
+        return removed + (try repairRepeatingSeries())
+    }
+
     public func delete(_ task: TaskItem) throws {
         context.delete(task)
         try context.save()
     }
 
-    /// Removes every completed task; returns their snapshots so the caller can offer undo.
+    /// Removes every completed task (or just those in `ids`); returns their snapshots so the caller can offer undo.
     @discardableResult
-    public func deleteCompleted() throws -> [TaskSnapshot] {
+    public func deleteCompleted(only ids: Set<UUID>? = nil) throws -> [TaskSnapshot] {
         let done = try context.fetch(FetchDescriptor<TaskItem>(predicate: #Predicate { $0.isCompleted == true }))
+            .filter { ids?.contains($0.id) ?? true }
         let snapshots = done.map(\.snapshot)
         for task in done { context.delete(task) }
         try context.save()

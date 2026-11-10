@@ -16,15 +16,18 @@ public enum TaskCategory {
     public static let defaults = [thingsToDo, thingsToBuy, peopleToCall]
 }
 
+/// iCloud (CloudKit) sync rules this model follows: no unique constraints, and every stored property is
+/// optional or has a default. `id` is unique in practice; `TaskStore.repairSyncConflicts()` merges the rare
+/// duplicate that two devices can produce.
 @Model
 public final class TaskItem {
-    @Attribute(.unique) public var id: UUID
-    public var title: String
-    public var categoryName: String
-    public var queueLevel: Int
-    public var skipCount: Int
-    public var createdAt: Date
-    public var isCompleted: Bool
+    public var id: UUID = UUID()
+    public var title: String = ""
+    public var categoryName: String = TaskCategory.thingsToDo
+    public var queueLevel: Int = QueueLevel.medium.rawValue
+    public var skipCount: Int = 0
+    public var createdAt: Date = Date.now
+    public var isCompleted: Bool = false
     public var completedAt: Date?
     /// `RepeatRule` raw value; nil means it doesn't repeat. Optional so existing stores migrate automatically.
     public var repeatRuleRaw: String?
@@ -52,6 +55,11 @@ public final class TaskItem {
     /// Open, available (not a future repeat) and not snoozed: something a nudge may show.
     public func isNudgeable(at date: Date) -> Bool {
         !isCompleted && isAvailable(at: date) && !isSnoozed(at: date)
+    }
+
+    /// The latest moment this task was created, queued, completed or snoozed; breaks ties between sync duplicates.
+    var lastTouched: Date {
+        [createdAt, enqueuedAt, completedAt, snoozedUntil].compactMap { $0 }.max() ?? createdAt
     }
 
     /// The task's place in line within its queue: earlier is closer to the front.

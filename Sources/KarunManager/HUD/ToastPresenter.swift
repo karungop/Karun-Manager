@@ -36,16 +36,71 @@ final class ToastPresenter {
         return panel
     }()
 
-    private var dismissWork: DispatchWorkItem?
+    private struct Entry {
+        let id: String
+        let toast: Toast
+        let onAction: (NotificationManager.Action?) -> Void
+        var expiry: DispatchWorkItem?
+    }
 
-    func show(_ toast: Toast, onAction: @escaping (NotificationManager.Action?) -> Void) {
-        let finish = { [weak self] (action: NotificationManager.Action?) in
-            self?.dismiss()
-            onAction(action)
+    /// Newest first. Each banner has its own lifetime, so an informational one arriving later can't
+    /// push out (or time out) a banner that's still waiting for Done / Snooze / Skip.
+    private var entries: [Entry] = []
+    private static let maxVisible = 3
+
+    /// `id` identifies the notification; a new banner with the same id replaces the old one.
+    func show(_ toast: Toast, id: String, onAction: @escaping (NotificationManager.Action?) -> Void) {
+        remove(id)
+        var entry = Entry(id: id, toast: toast, onAction: onAction)
+        if !toast.hasTaskActions {
+            let work = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated { self?.remove(id) }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.informationalLifetime, execute: work)
+            entry.expiry = work
         }
-        let hosting = NSHostingView(
-            rootView: ToastView(toast: toast, onAction: finish, onClose: { [weak self] in self?.dismiss() })
-        )
+        entries.insert(entry, at: 0)
+        // Over the limit: drop the oldest informational banner first, else the oldest of all.
+        while entries.count > Self.maxVisible {
+            let index = entries.lastIndex { !$0.toast.hasTaskActions } ?? entries.count - 1
+            entries.remove(at: index).expiry?.cancel()
+        }
+        render()
+    }
+
+    func dismiss() {
+        for entry in entries { entry.expiry?.cancel() }
+        entries.removeAll()
+        render()
+    }
+
+    private func remove(_ id: String) {
+        entries.removeAll { entry in
+            guard entry.id == id else { return false }
+            entry.expiry?.cancel()
+            return true
+        }
+        render()
+    }
+
+    private func render() {
+        guard !entries.isEmpty else {
+            panel.orderOut(nil)
+            panel.contentView = nil
+            return
+        }
+        let views = entries.map { entry in
+            let id = entry.id
+            return ToastView(
+                toast: entry.toast,
+                onAction: { [weak self] action in
+                    self?.remove(id)
+                    entry.onAction(action)
+                },
+                onClose: { [weak self] in self?.remove(id) }
+            )
+        }
+        let hosting = NSHostingView(rootView: VStack(spacing: 8) { ForEach(views.indices, id: \.self) { views[$0] } })
         panel.contentView = hosting
         panel.setContentSize(hosting.fittingSize)
         if let screen = NSScreen.main ?? NSScreen.screens.first {
@@ -56,20 +111,6 @@ final class ToastPresenter {
             ))
         }
         panel.orderFrontRegardless()
-
-        dismissWork?.cancel()
-        guard !toast.hasTaskActions else { return }
-        let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.dismiss() }
-        }
-        dismissWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.informationalLifetime, execute: work)
-    }
-
-    func dismiss() {
-        dismissWork?.cancel()
-        panel.orderOut(nil)
-        panel.contentView = nil
     }
 }
 

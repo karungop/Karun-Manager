@@ -175,7 +175,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 body: content.body,
                 hasTaskActions: hasTaskActions
             )
-            toasts.show(toast) { [weak self] action in self?.onResponse(taskID, action) }
+            toasts.show(toast, id: id) { [weak self] action in self?.onResponse(taskID, action) }
             return
         }
         center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil)) { error in

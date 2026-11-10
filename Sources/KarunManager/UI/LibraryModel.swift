@@ -87,6 +87,9 @@ struct LibraryIndex {
 struct UndoBanner: Identifiable, Equatable {
     let id = UUID()
     let message: String
+    /// The banner's lifetime counts from here, so one raised while the window was closed (a HUD action)
+    /// doesn't pop up later when the window opens.
+    let createdAt = Date()
 }
 
 /// UI state for the main window. Data itself comes from SwiftData `@Query`; mutations go through `TaskStore`.
@@ -104,6 +107,8 @@ final class LibraryModel {
     var now = Date()
     /// False when macOS refused notification permission and in-app banners stand in.
     var usesSystemNotifications = true
+    /// Shown in Settings → iCloud.
+    var syncStatus: CloudSync.Status = .disabledForSession
     /// Filters the current page by title and notes.
     var searchText = ""
 
@@ -230,9 +235,15 @@ final class LibraryModel {
         edit(task, "Moved “\(task.title)” to \(categoryName)") { try $0.setCategory(task, to: categoryName) }
     }
 
-    func move(_ task: TaskItem, before target: TaskItem) {
+    /// Puts `task` in front of `target`; with `adoptingCategory`, also gives it target's category.
+    /// One undo step covers both.
+    func move(_ task: TaskItem, before target: TaskItem, adoptingCategory: Bool = false) {
         guard task.id != target.id else { return }
-        edit(task, "Reordered “\(task.title)”") { try $0.move(task, before: target) }
+        let category = target.categoryName
+        edit(task, "Reordered “\(task.title)”") { store in
+            if adoptingCategory && task.categoryName != category { try store.setCategory(task, to: category) }
+            try store.move(task, before: target)
+        }
     }
 
     func setRepeatRule(_ task: TaskItem, to rule: RepeatRule) {
@@ -245,11 +256,12 @@ final class LibraryModel {
 
     // Text edits aren't registered here: the text fields have their own undo while typing.
     func setTitle(_ task: TaskItem, to title: String) {
+        guard contains(task) else { return }
         perform { try $0.setTitle(task, to: title) }
     }
 
     func setNotes(_ task: TaskItem, to notes: String) {
-        guard notes != (task.notes ?? "") else { return }
+        guard contains(task), notes != (task.notes ?? "") else { return }
         perform { try $0.setNotes(task, to: notes) }
     }
 
@@ -320,9 +332,10 @@ final class LibraryModel {
         }
     }
 
-    func clearCompleted() {
+    /// Clears completed tasks; pass `only` to limit it to the ones on screen (e.g. while searching).
+    func clearCompleted(only ids: Set<UUID>? = nil) {
         var removed: [TaskSnapshot] = []
-        perform { removed = try $0.deleteCompleted() }
+        perform { removed = try $0.deleteCompleted(only: ids) }
         guard !removed.isEmpty else { return }
         if let id = selectedTaskID, removed.contains(where: { $0.id == id }) { selectedTaskID = nil }
         registerUndo("Cleared \(removed.count) completed") { model in
@@ -386,9 +399,34 @@ final class LibraryModel {
 
     // MARK: Plumbing
 
+    /// False once a task has been deleted. Editors that save as they disappear check this first, since
+    /// a deleted SwiftData model must not be read or written.
+    func contains(_ task: TaskItem) -> Bool {
+        tasks.contains { $0 === task }
+    }
+
     /// Drag and drop carries the task's UUID string.
     func task(withDragID dragID: String, in tasks: [TaskItem]) -> TaskItem? {
         tasks.first { $0.id.uuidString == dragID }
+    }
+
+    /// After iCloud brings in another device's changes (tasks or synced preferences): tidy up any
+    /// duplicates the merge produced and redraw. This can also run after our own saves (the store
+    /// reports those too), so it must stay cheap and leave undo alone; undo handlers already skip tasks
+    /// that no longer exist.
+    func refreshAfterRemoteChange() {
+        do {
+            let removed = try store.repairSyncConflicts()
+            if removed > 0 { NSLog("KarunManager: merged \(removed) duplicate task(s) after sync") }
+        } catch {
+            NSLog("KarunManager: sync repair failed: \(error)")
+        }
+        reloadTasks()
+        if let id = selectedTaskID, !tasks.contains(where: { $0.id == id }) { selectedTaskID = nil }
+        if case .category(let name) = selection, !store.categories.contains(name) { selection = .allOpen }
+        if !store.categories.contains(composerCategory) { composerCategory = store.categories.first ?? composerCategory }
+        revision += 1
+        didMutate()
     }
 
     func perform(_ action: (TaskStore) throws -> Void) {
